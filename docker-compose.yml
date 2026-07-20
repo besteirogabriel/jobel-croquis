@@ -1,0 +1,12 @@
+services:
+  jobel-croquis:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - jobel_data:/data
+    restart: unless-stopped
+volumes:
+  jobel_data:
+
