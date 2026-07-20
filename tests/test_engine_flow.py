@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from backend.engine.models import (
+    CroquiPlan,
+    EquipmentCandidate,
+    EquipmentPlacement,
+    LocalExtraction,
+    Point,
+    ProjectMetadata,
+    Segment,
+)
+from backend.engine.service import CroquiEngine
+
+
+def extraction(score: float = 0.95) -> LocalExtraction:
+    return LocalExtraction(
+        metadata=ProjectMetadata(pages=1),
+        text="TR 740342 75 kVA",
+        identifiers=["740342", "649338"],
+        candidates=[
+            EquipmentCandidate(
+                equipment_type="TR",
+                number="740342",
+                score=score,
+                evidence=["evidência de teste"],
+                position=Point(x=0.5, y=0.5),
+            )
+        ],
+        segments=[
+            Segment(start=Point(x=0.35, y=0.5), end=Point(x=0.49, y=0.5)),
+            Segment(start=Point(x=0.51, y=0.5), end=Point(x=0.7, y=0.5)),
+        ],
+    )
+
+
+def settings() -> SimpleNamespace:
+    return SimpleNamespace(
+        ai_enabled=False,
+        openai_api_key="",
+        openai_model="test",
+        openai_timeout_seconds=1,
+        local_auto_threshold=0.82,
+        local_min_gap=0.12,
+        libreoffice_bin="soffice",
+    )
+
+
+class Fallback:
+    def __init__(self, plan: CroquiPlan) -> None:
+        self.plan = plan
+        self.calls = 0
+
+    def propose(self, pdf_path: Path, local: LocalExtraction) -> CroquiPlan:
+        self.calls += 1
+        return self.plan
+
+
+def fallback_plan(number: str = "740342") -> CroquiPlan:
+    main = EquipmentPlacement(
+        equipment_type="TR",
+        number=number,
+        position=Point(x=0.5, y=0.5),
+        label=f"TR {number}",
+        main=True,
+    )
+    return CroquiPlan(
+        main_equipment=main,
+        equipment=[main],
+        segments=[
+            Segment(start=Point(x=0.2, y=0.5), end=Point(x=0.45, y=0.5)),
+            Segment(start=Point(x=0.55, y=0.5), end=Point(x=0.8, y=0.5)),
+        ],
+        confidence=0.96,
+        source="openai_fallback",
+    )
+
+
+def run_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, local: LocalExtraction, fallback: Fallback):
+    monkeypatch.setattr("backend.engine.service.extract_project", lambda _, **__: local)
+    engine = CroquiEngine(settings(), fallback=fallback)
+    return engine.run(
+        job_id="0123456789ab",
+        project=tmp_path / "project.pdf",
+        template=None,
+        job_dir=tmp_path,
+    )
+
+
+def test_local_result_prevents_api_call(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    fallback = Fallback(fallback_plan())
+    result = run_with(monkeypatch, tmp_path, extraction(), fallback)
+    assert result.validation.accepted is True
+    assert result.plan.source == "local"
+    assert result.ai_used is False
+    assert fallback.calls == 0
+
+
+def test_blocked_local_result_calls_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    fallback = Fallback(fallback_plan())
+    result = run_with(monkeypatch, tmp_path, extraction(score=0.55), fallback)
+    assert fallback.calls == 1
+    assert result.ai_used is True
+    assert result.validation.accepted is True
+    assert result.plan.source == "openai_fallback"
+
+
+def test_hallucinated_fallback_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    fallback = Fallback(fallback_plan(number="9999999"))
+    result = run_with(monkeypatch, tmp_path, extraction(score=0.55), fallback)
+    assert fallback.calls == 1
+    assert result.validation.accepted is False
+    assert result.plan.source == "local"
+    assert any(issue.code == "AI_MAIN_EQUIPMENT_NOT_IN_PROJECT" for issue in result.validation.issues)

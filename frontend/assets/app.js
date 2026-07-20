@@ -1,5 +1,111 @@
-const $=s=>document.querySelector(s);let job='';
-fetch('/api/health').then(r=>r.json()).then(x=>$('#mode').textContent=x.ai==='offline'?'Modo offline':'IA de apoio disponível');
-$('#upload').onsubmit=async e=>{e.preventDefault();const b=e.submitter;b.disabled=true;b.textContent='Analisando…';try{const r=await fetch('/api/analisar',{method:'POST',body:new FormData(e.target)});if(!r.ok)throw Error(await r.text());const d=await r.json();job=d.job_id;$('#facts').className='facts';$('#facts').innerHTML=[['Município',d.municipio],['Obra',d.obra],['Data',d.data_projeto],['Ações',d.acoes.map(a=>`${a.acao} ${a.tipo} ${a.numero}`).join(', ')||'não extraída'],['Identificadores',d.identificadores.join(', ')],['Páginas',d.pages]].map(x=>`<div class=fact><b>${x[0]}</b>${x[1]||'—'}</div>`).join('');$('#confirm [name=job_id]').value=job;$('#result').classList.remove('hidden');}catch(x){alert(x.message)}finally{b.disabled=false;b.textContent='Analisar projeto'}};
-$('#confirm').onsubmit=async e=>{e.preventDefault();const r=await fetch('/api/confirmar',{method:'POST',body:new FormData(e.target)});if(!r.ok)return alert(await r.text());const a=$('#download');a.href=`/api/relatorio/${job}`;a.classList.remove('hidden');a.textContent='Baixar relatório de análise';};
+const $ = (selector) => document.querySelector(selector);
+let job = "";
 
+const statusLabels = {
+  GENERATED: "Croqui gerado e validado",
+  NEEDS_REVIEW: "Motor bloqueou a geração: revisão necessária",
+  TEMPLATE_REQUIRED: "Decisão pronta; falta o Excel oficial com a aba Simbologia",
+  READY_TO_GENERATE: "Plano técnico validado",
+};
+
+function setFacts(data) {
+  const facts = [
+    ["Município", data.municipio],
+    ["Obra", data.obra],
+    ["Data", data.data_projeto],
+    ["Ações", (data.acoes || []).map((item) => `${item.acao} ${item.tipo} ${item.numero}`).join(", ")],
+    ["Identificadores", (data.identificadores || []).join(", ")],
+    ["Páginas", data.pages],
+  ];
+  const root = $("#facts");
+  root.replaceChildren();
+  root.className = "facts";
+  for (const [label, value] of facts) {
+    const card = document.createElement("div");
+    card.className = "fact";
+    const title = document.createElement("b");
+    title.textContent = label;
+    card.append(title, document.createTextNode(value || "—"));
+    root.append(card);
+  }
+}
+
+function setStatus(data) {
+  const root = $("#engine-status");
+  root.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = statusLabels[data.status] || data.status;
+  root.append(title);
+  const issues = (data.validation && data.validation.issues) || [];
+  if (issues.length) {
+    const list = document.createElement("ul");
+    for (const issue of issues) {
+      const item = document.createElement("li");
+      item.textContent = issue.message;
+      list.append(item);
+    }
+    root.append(list);
+  }
+  root.className = data.status === "GENERATED" ? "engine-status ok" : "engine-status";
+}
+
+function setDownloads(data) {
+  const root = $("#downloads");
+  root.replaceChildren();
+  const available = data.artifacts || {};
+  const kinds = [
+    ["pdf", "Baixar PDF"],
+    ["xls", "Baixar Excel .xls"],
+    ["xlsx", "Baixar Excel .xlsx"],
+    ["report", "Baixar relatório"],
+  ];
+  for (const [kind, label] of kinds) {
+    if (!available[kind]) continue;
+    const link = document.createElement("a");
+    link.className = "download";
+    link.href = `/api/jobs/${job}/download/${kind}`;
+    link.textContent = label;
+    root.append(link);
+  }
+  root.className = root.children.length ? "downloads" : "downloads hidden";
+}
+
+fetch("/api/health")
+  .then((response) => response.json())
+  .then((health) => {
+    $("#mode").textContent = health.ai === "offline" ? "Motor local" : "Motor local + fallback IA";
+  });
+
+$("#upload").onsubmit = async (event) => {
+  event.preventDefault();
+  const button = event.submitter;
+  button.disabled = true;
+  button.textContent = "Analisando…";
+  try {
+    const response = await fetch("/api/analisar", { method: "POST", body: new FormData(event.target) });
+    if (!response.ok) throw new Error(await response.text());
+    const data = await response.json();
+    job = data.job_id;
+    setFacts(data);
+    setStatus(data);
+    setDownloads(data);
+    $("#confirm [name=job_id]").value = job;
+    if (data.tipo_isolamento) $("#confirm [name=tipo]").value = data.tipo_isolamento;
+    if (data.equipamento_isolamento) $("#confirm [name=numero]").value = data.equipamento_isolamento;
+    $("#result").classList.remove("hidden");
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Analisar projeto";
+  }
+};
+
+$("#confirm").onsubmit = async (event) => {
+  event.preventDefault();
+  const response = await fetch("/api/confirmar", { method: "POST", body: new FormData(event.target) });
+  if (!response.ok) return alert(await response.text());
+  const data = await response.json();
+  setStatus(data);
+  setDownloads(data);
+};
