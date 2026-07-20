@@ -6,8 +6,13 @@ from zipfile import ZipFile
 
 from backend.engine.excel_native import (
     CANONICAL_SYMBOLS,
+    NS_A,
     NS_XDR,
+    _clone_symbol,
+    _offset_and_extent,
+    _outer_xfrm,
     _q,
+    _symbol_anchors,
     _workbook_parts,
     build_native_workbook,
     inspect_template,
@@ -72,3 +77,62 @@ def test_bundled_template_is_sanitized_and_keeps_rge_logo():
         contents = b"\n".join(archive.read(name) for name in archive.namelist())
     for customer_value in (b"1130054", b"770053", b"Luiz Fernando", b"CAXIAS DO SUL"):
         assert customer_value not in contents
+
+
+def _cell_anchor_signature(anchor: ET.Element) -> dict[str, tuple[int, int, int, int]]:
+    signature: dict[str, tuple[int, int, int, int]] = {}
+    for marker in ("from", "to"):
+        node = anchor.find(_q(NS_XDR, marker))
+        assert node is not None
+        signature[marker] = tuple(
+            int(node.find(_q(NS_XDR, field)).text or "0")
+            for field in ("col", "colOff", "row", "rowOff")
+        )
+    return signature
+
+
+def _internal_transform_signature(anchor: ET.Element) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    outer_offset = _outer_xfrm(anchor).find(_q(NS_A, "off"))
+    offsets = [
+        (node.attrib.get("x", "0"), node.attrib.get("y", "0"))
+        for node in anchor.findall(f".//{_q(NS_A, 'off')}")
+        if node is not outer_offset
+    ]
+    child_offsets = [
+        (node.attrib.get("x", "0"), node.attrib.get("y", "0"))
+        for node in anchor.findall(f".//{_q(NS_A, 'chOff')}")
+    ]
+    return offsets, child_offsets
+
+
+def test_cloned_symbols_keep_official_size_offsets_and_group_geometry():
+    template = Path("backend/assets/modelo_croqui_oficial.xlsx")
+    with ZipFile(template) as archive:
+        parts = _workbook_parts(archive)
+        catalog = _symbol_anchors(archive.read(parts.symbol_drawing))
+
+    for key in ("POLE", "TR", "FU", "FC", "RL", "RG"):
+        source = catalog[key]
+        clone, _ = _clone_symbol(source, Point(x=0.53, y=0.47), 900)
+        source_cells = _cell_anchor_signature(source)
+        clone_cells = _cell_anchor_signature(clone)
+
+        # A caixa e os offsets fracionários da âncora oficial são preservados.
+        assert clone_cells["to"][0] - clone_cells["from"][0] == (
+            source_cells["to"][0] - source_cells["from"][0]
+        )
+        assert clone_cells["to"][2] - clone_cells["from"][2] == (
+            source_cells["to"][2] - source_cells["from"][2]
+        )
+        assert clone_cells["from"][1::2] == source_cells["from"][1::2]
+        assert clone_cells["to"][1::2] == source_cells["to"][1::2]
+        assert clone_cells["to"][0] - source_cells["to"][0] == (
+            clone_cells["from"][0] - source_cells["from"][0]
+        )
+        assert clone_cells["to"][2] - source_cells["to"][2] == (
+            clone_cells["from"][2] - source_cells["from"][2]
+        )
+
+        # Clonar muda posição, nunca extensão ou coordenadas internas do grupo.
+        assert _offset_and_extent(clone)[2:] == _offset_and_extent(source)[2:]
+        assert _internal_transform_signature(clone) == _internal_transform_signature(source)

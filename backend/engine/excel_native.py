@@ -200,12 +200,38 @@ def _canvas(point: Point) -> tuple[int, int]:
 
 
 def _shift_anchor(anchor: ET.Element, dx: int, dy: int) -> None:
-    for offset in anchor.findall(f".//{_q(NS_A, 'off')}"):
-        offset.set("x", str(int(offset.attrib.get("x", "0")) + dx))
-        offset.set("y", str(int(offset.attrib.get("y", "0")) + dy))
-    for child_offset in anchor.findall(f".//{_q(NS_A, 'chOff')}"):
-        child_offset.set("x", str(int(child_offset.attrib.get("x", "0")) + dx))
-        child_offset.set("y", str(int(child_offset.attrib.get("y", "0")) + dy))
+    # Um grupo DrawingML possui um sistema de coordenadas próprio. Somente o
+    # offset da transformação externa deve acompanhar a nova posição; mover os
+    # a:off internos ou a:chOff deforma e separa os componentes do símbolo.
+    transform = _outer_xfrm(anchor)
+    offset = transform.find(_q(NS_A, "off"))
+    if offset is None:
+        raise TemplateError(f"objeto {_top_name(anchor)} sem posição")
+    offset.set("x", str(int(offset.attrib.get("x", "0")) + dx))
+    offset.set("y", str(int(offset.attrib.get("y", "0")) + dy))
+
+
+def _translate_anchor_cells(anchor: ET.Element, dx: int, dy: int) -> None:
+    """Move o twoCellAnchor sem alterar sua caixa ou seus offsets oficiais.
+
+    Excel e LibreOffice podem priorizar partes diferentes da geometria do
+    DrawingML. Por isso a transformação EMU e a âncora de células precisam ser
+    transladadas em conjunto, mantendo exatamente o tamanho do objeto fonte.
+    """
+
+    origin = anchor.find(_q(NS_XDR, "from"))
+    destination = anchor.find(_q(NS_XDR, "to"))
+    if origin is None or destination is None:
+        return
+    delta_col = round(dx * 42 / CANVAS_WIDTH)
+    delta_row = round(dy * 24 / CANVAS_HEIGHT)
+    for node in (origin, destination):
+        col = node.find(_q(NS_XDR, "col"))
+        row = node.find(_q(NS_XDR, "row"))
+        if col is None or row is None:
+            raise TemplateError(f"objeto {_top_name(anchor)} sem âncora de célula completa")
+        col.text = str(int(col.text or "0") + delta_col)
+        row.text = str(int(row.text or "0") + delta_row)
 
 
 def _set_anchor_cells(anchor: ET.Element, point: Point, span_col: int = 2, span_row: int = 2) -> None:
@@ -253,8 +279,10 @@ def _clone_symbol(source: ET.Element, point: Point, next_id: int) -> tuple[ET.El
     anchor = copy.deepcopy(source)
     x, y, width, height = _offset_and_extent(anchor)
     target_x, target_y = _canvas(point)
-    _shift_anchor(anchor, target_x - (x + width // 2), target_y - (y + height // 2))
-    _set_anchor_cells(anchor, point)
+    dx = target_x - (x + width // 2)
+    dy = target_y - (y + height // 2)
+    _shift_anchor(anchor, dx, dy)
+    _translate_anchor_cells(anchor, dx, dy)
     return anchor, _renumber(anchor, next_id)
 
 
