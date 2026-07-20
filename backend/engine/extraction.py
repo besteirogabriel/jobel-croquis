@@ -59,6 +59,56 @@ def _one(text: str, patterns: tuple[str, ...]) -> str:
     return ""
 
 
+TITLE_BLOCK_LABELS = {"MUNICIPIO", "OBRA", "DATA", "NOTA", "LEVANTADOR", "PROJETISTA"}
+
+
+def _title_block_value(doc: fitz.Document, label: str) -> str:
+    expected = normalize(label).rstrip(":")
+    matches: list[tuple[fitz.Page, tuple]] = []
+    for page in doc:
+        for word in page.get_text("words", sort=False):
+            if normalize(str(word[4])).rstrip(":") != expected:
+                continue
+            if word[1] / max(page.rect.height, 1) < 0.55:
+                continue
+            matches.append((page, word))
+    if not matches:
+        return ""
+
+    page, marker = max(matches, key=lambda item: (item[1][1], item[1][0]))
+    block, marker_line, marker_word = marker[5], marker[6], marker[7]
+    values: list[tuple[int, int, str]] = []
+    for word in page.get_text("words", sort=False):
+        if word[5] != block:
+            continue
+        line, sequence = word[6], word[7]
+        follows_on_line = line == marker_line and sequence > marker_word
+        follows_below = line > marker_line and word[0] >= marker[0] - 2
+        if not (follows_on_line or follows_below):
+            continue
+        token = normalize(str(word[4])).rstrip(":")
+        if token in TITLE_BLOCK_LABELS:
+            continue
+        values.append((line, sequence, str(word[4])))
+    return " ".join(value for _, _, value in sorted(values)).strip()
+
+
+def _extract_metadata(doc: fitz.Document, text: str) -> ProjectMetadata:
+    return ProjectMetadata(
+        municipio=_title_block_value(doc, "Município")
+        or _one(text, (r"Munic[ií]pio\s*:?\s*([^\n]+)", r"Cidade\s*:?\s*([^\n]+)")),
+        obra=_title_block_value(doc, "Obra")
+        or _one(text, (r"Obra\s*:?\s*([^\n]+)", r"Projeto\s*:?\s*([^\n]+)")),
+        data_projeto=_title_block_value(doc, "Data")
+        or _one(text, (r"Data\s*:?\s*(\d{2}/\d{2}/\d{4})",)),
+        nota=_title_block_value(doc, "Nota") or _one(text, (r"Nota\s*:?\s*(\d{9,12})",)),
+        levantador=_title_block_value(doc, "Levantador")
+        or _one(text, (r"Levantador\s*:?\s*([^\n]+)", r"Projetista\s*:?\s*([^\n]+)")),
+        departamento=_one(text, (r"Departamento\s*:?\s*([^\n]+)",)),
+        pages=len(doc),
+    )
+
+
 def _page_words(page: fitz.Page) -> list[tuple[float, float, float, float, str]]:
     return [(w[0], w[1], w[2], w[3], str(w[4])) for w in page.get_text("words", sort=True)]
 
@@ -151,6 +201,7 @@ def _extract_candidates(doc: fitz.Document, text: str) -> list[EquipmentCandidat
 
 def _extract_actions(text: str) -> list[ManeuverAction]:
     actions: list[ManeuverAction] = []
+    seen: set[tuple[str, str, str]] = set()
     pattern = re.compile(
         r"(?<![A-Z0-9])(ABRIR|FECHAR)(?![A-Z0-9])[^A-Z]{0,12}"
         r"(TRANSFORMADOR|RELIGADOR|REGULADOR|SECCIONALIZADOR|"
@@ -158,14 +209,80 @@ def _extract_actions(text: str) -> list[ManeuverAction]:
         re.I,
     )
     for match in pattern.finditer(normalize(text)):
+        key = (match.group(1).upper(), normalize(match.group(2)), match.group(3))
+        if key in seen:
+            continue
+        seen.add(key)
         actions.append(
-            ManeuverAction(
-                action=match.group(1).title(),
-                equipment_type=match.group(2).title(),
-                number=match.group(3),
-            )
+            ManeuverAction(action=key[0].title(), equipment_type=key[1].title(), number=key[2])
         )
     return actions
+
+
+def _action_type(label: str) -> EquipmentType | None:
+    normalized = normalize(label)
+    if normalized in TYPE_ALIASES:
+        return TYPE_ALIASES[normalized]
+    if normalized == "CHAVE FUSIVEL":
+        return EquipmentType.FU
+    if normalized == "CHAVE FACA":
+        return EquipmentType.FC
+    return None
+
+
+def _identifier_position(doc: fitz.Document, number: str) -> Point | None:
+    positions: list[tuple[float, Point]] = []
+    for page in doc:
+        for word in _page_words(page):
+            if word[4].strip(".,;:()[]") != number:
+                continue
+            position = _word_position(word, page)
+            penalty = 1 if position.y > 0.78 else 0
+            positions.append((penalty + abs(position.y - 0.5), position))
+    return min(positions, key=lambda item: item[0])[1] if positions else None
+
+
+def _action_equipment_is_work_target(text: str, equipment_type: EquipmentType) -> bool:
+    if equipment_type is not EquipmentType.TR:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:SUBSTITUIR|SUBST(?:ITUIR)?|RETIRAR|REMOVER)\s+(?:O\s+)?(?:TR|TRANSFORMADOR)\b",
+            normalize(text),
+        )
+    )
+
+
+def _apply_action_evidence(
+    doc: fitz.Document,
+    text: str,
+    candidates: list[EquipmentCandidate],
+    actions: list[ManeuverAction],
+) -> list[EquipmentCandidate]:
+    by_key = {(item.equipment_type, item.number): item for item in candidates}
+    for action in actions:
+        equipment_type = _action_type(action.equipment_type)
+        if equipment_type is None:
+            continue
+        key = (equipment_type, action.number)
+        candidate = by_key.get(key)
+        position = candidate.position if candidate is not None else None
+        position = position or _identifier_position(doc, action.number)
+        evidence = set(candidate.evidence if candidate is not None else [])
+        if _action_equipment_is_work_target(text, equipment_type):
+            score = min(candidate.score if candidate is not None else 0.64, 0.64)
+            evidence.add("equipamento da manobra é também alvo da obra; não define o isolamento")
+        else:
+            score = max(candidate.score if candidate is not None else 0, 0.99)
+            evidence.add("equipamento identificado na tabela de manobras")
+        by_key[key] = EquipmentCandidate(
+            equipment_type=equipment_type,
+            number=action.number,
+            score=score,
+            evidence=sorted(evidence),
+            position=position,
+        )
+    return sorted(by_key.values(), key=lambda candidate: (-candidate.score, candidate.number))
 
 
 def _distance(a: Point, b: Point) -> float:
@@ -184,7 +301,18 @@ def _extract_segments(doc: fitz.Document) -> list[Segment]:
         width, height = max(page.rect.width, 1), max(page.rect.height, 1)
         for drawing in page.get_drawings():
             color = drawing.get("color") or (0.0, 0.0, 0.0)
-            style = "secondary" if sum(color) > 1.3 else "primary"
+            line_width = float(drawing.get("width") or 0)
+            red, green, blue = color
+            if line_width < 0.9:
+                continue
+            if blue > 0.55 and blue > red + 0.2 and blue > green + 0.15:
+                style = "primary"
+            elif green > 0.45 and green > red + 0.15 and green > blue + 0.15:
+                style = "secondary"
+            elif red > 0.65 and green < 0.35 and blue < 0.35:
+                style = "projected"
+            else:
+                continue
             for item in drawing.get("items", []):
                 if not item or item[0] != "l":
                     continue
@@ -194,10 +322,34 @@ def _extract_segments(doc: fitz.Document) -> list[Segment]:
                 length = _distance(start, end)
                 if length < 0.008 or length > 0.72:
                     continue
-                if min(start.y, end.y) > 0.72 or max(start.x, end.x) < 0.03:
+                if min(start.y, end.y) > 0.92 or max(start.x, end.x) < 0.03:
                     continue
                 result.append(Segment(start=start, end=end, style=style))
-    return result[:1200]
+    return result[:400]
+
+
+def _run_tesseract(
+    image: bytes,
+    *,
+    tesseract_bin: str,
+    language: str,
+    psm: int,
+) -> str:
+    languages = (language, "eng") if "+" in language else (language,)
+    for selected_language in languages:
+        try:
+            process = subprocess.run(
+                [tesseract_bin, "stdin", "stdout", "-l", selected_language, "--psm", str(psm)],
+                input=image,
+                capture_output=True,
+                timeout=35,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return ""
+        if process.returncode == 0:
+            return process.stdout.decode("utf-8", errors="replace")
+    return ""
 
 
 def _targeted_ocr(
@@ -216,36 +368,44 @@ def _targeted_ocr(
     texts: list[str] = []
     for page in list(doc)[:2]:
         rect = page.rect
-        clip = fitz.Rect(
-            rect.width * 0.025,
-            rect.height * 0.74,
-            rect.width * 0.38,
-            rect.height * 0.995,
+        broad = page.get_pixmap(
+            dpi=dpi,
+            clip=fitz.Rect(
+                rect.width * 0.025,
+                rect.height * 0.74,
+                rect.width * 0.38,
+                rect.height * 0.995,
+            ),
+            alpha=False,
         )
-        pixmap = page.get_pixmap(dpi=dpi, clip=clip, alpha=False)
-        try:
-            process = subprocess.run(
-                [tesseract_bin, "stdin", "stdout", "-l", language, "--psm", "6"],
-                input=pixmap.tobytes("png"),
-                capture_output=True,
-                timeout=35,
-                check=False,
+        table = page.get_pixmap(
+            dpi=dpi,
+            clip=fitz.Rect(
+                rect.width * 0.035,
+                rect.height * 0.82,
+                rect.width * 0.30,
+                rect.height * 0.995,
+            ),
+            alpha=False,
+        )
+        texts.extend(
+            text
+            for text in (
+                _run_tesseract(
+                    broad.tobytes("png"),
+                    tesseract_bin=tesseract_bin,
+                    language=language,
+                    psm=6,
+                ),
+                _run_tesseract(
+                    table.tobytes("png"),
+                    tesseract_bin=tesseract_bin,
+                    language=language,
+                    psm=4,
+                ),
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return ""
-        if process.returncode != 0 and "+" in language:
-            try:
-                process = subprocess.run(
-                    [tesseract_bin, "stdin", "stdout", "-l", "eng", "--psm", "6"],
-                    input=pixmap.tobytes("png"),
-                    capture_output=True,
-                    timeout=35,
-                    check=False,
-                )
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                return ""
-        if process.returncode == 0:
-            texts.append(process.stdout.decode("utf-8", errors="replace"))
+            if text
+        )
     return "\n".join(texts)
 
 
@@ -262,21 +422,15 @@ def extract_project(
         if ocr_enabled:
             text = f"{text}\n{_targeted_ocr(doc, tesseract_bin=tesseract_bin, language=ocr_language, dpi=ocr_dpi)}"
         normalized = normalize(text)
-        metadata = ProjectMetadata(
-            municipio=_one(text, (r"Munic[ií]pio\s*:?\s*([^\n]+)", r"Cidade\s*:?\s*([^\n]+)")),
-            obra=_one(text, (r"Obra\s*:?\s*([^\n]+)", r"Projeto\s*:?\s*([^\n]+)")),
-            data_projeto=_one(text, (r"Data\s*:?\s*(\d{2}/\d{2}/\d{4})",)),
-            nota=_one(text, (r"Nota\s*:?\s*(\d{9,12})",)),
-            levantador=_one(text, (r"Levantador\s*:?\s*([^\n]+)", r"Projetista\s*:?\s*([^\n]+)")),
-            departamento=_one(text, (r"Departamento\s*:?\s*([^\n]+)",)),
-            pages=len(doc),
-        )
+        metadata = _extract_metadata(doc, text)
+        actions = _extract_actions(text)
+        candidates = _apply_action_evidence(doc, text, _extract_candidates(doc, text), actions)
         identifiers = sorted(set(_NUMBER_RE.findall(normalized)))
         return LocalExtraction(
             metadata=metadata,
             text=text,
             identifiers=identifiers,
-            actions=_extract_actions(text),
-            candidates=_extract_candidates(doc, text),
+            actions=actions,
+            candidates=candidates,
             segments=_extract_segments(doc),
         )

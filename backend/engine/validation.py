@@ -6,8 +6,17 @@ from .models import CroquiPlan, LocalExtraction, ValidationIssue, ValidationResu
 def _largest_topology_component(plan: CroquiPlan) -> float:
     if not plan.segments:
         return 0
+    network_segments = [segment for segment in plan.segments if segment.style != "projected"]
+    if not network_segments:
+        network_segments = plan.segments
+    style_counts: dict[str, int] = {}
+    for segment in network_segments:
+        style_counts[segment.style] = style_counts.get(segment.style, 0) + 1
+    dominant_style = max(style_counts, key=style_counts.get)
     adjacency: dict[tuple[int, int], set[tuple[int, int]]] = {}
-    for segment in plan.segments:
+    for segment in network_segments:
+        if segment.style != dominant_style:
+            continue
         start = (round(segment.start.x * 40), round(segment.start.y * 40))
         end = (round(segment.end.x * 40), round(segment.end.y * 40))
         adjacency.setdefault(start, set()).add(end)

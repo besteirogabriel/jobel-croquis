@@ -73,6 +73,30 @@ def _normalized_segments(
     return list(unique.values())
 
 
+def _infer_poles(segments: list[Segment]) -> list[Point]:
+    network = [segment for segment in segments if segment.style != "projected"]
+    if not network:
+        return []
+    style_counts: dict[str, int] = {}
+    for segment in network:
+        style_counts[segment.style] = style_counts.get(segment.style, 0) + 1
+    dominant_style = max(style_counts, key=style_counts.get)
+    buckets: dict[tuple[int, int], list[Point]] = {}
+    for segment in network:
+        if segment.style != dominant_style:
+            continue
+        for point in (segment.start, segment.end):
+            buckets.setdefault((round(point.x * 50), round(point.y * 50)), []).append(point)
+    poles = [
+        Point(
+            x=sum(point.x for point in points) / len(points),
+            y=sum(point.y for point in points) / len(points),
+        )
+        for points in buckets.values()
+    ]
+    return poles[:60]
+
+
 def decide_local(
     extraction: LocalExtraction,
     *,
@@ -90,6 +114,7 @@ def decide_local(
     crop = _network_crop(extraction, position)
     transformed_position = _transform_point(position, crop)
     segments = _normalized_segments(extraction, crop)
+    poles = _infer_poles(segments)
 
     accepted_confidence = (
         best.score if best.score >= threshold and gap >= minimum_gap else min(best.score, 0.79)
@@ -139,6 +164,7 @@ def decide_local(
     return CroquiPlan(
         main_equipment=main,
         equipment=equipment,
+        poles=poles,
         segments=segments,
         work_zones=[work_zone],
         confidence=accepted_confidence,

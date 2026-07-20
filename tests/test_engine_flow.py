@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.engine.decision import _infer_poles
 from backend.engine.models import (
     CroquiPlan,
     EquipmentCandidate,
@@ -117,3 +118,15 @@ def test_hallucinated_fallback_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_
     assert result.validation.accepted is False
     assert result.plan.source == "local"
     assert any(issue.code == "AI_MAIN_EQUIPMENT_NOT_IN_PROJECT" for issue in result.validation.issues)
+
+
+def test_poles_follow_dominant_network_vertices():
+    segments = [
+        Segment(start=Point(x=0.1, y=0.4), end=Point(x=0.4, y=0.4), style="secondary"),
+        Segment(start=Point(x=0.4, y=0.4), end=Point(x=0.8, y=0.4), style="secondary"),
+        Segment(start=Point(x=0.1, y=0.42), end=Point(x=0.8, y=0.42), style="primary"),
+    ]
+
+    poles = _infer_poles(segments)
+
+    assert len(poles) == 3
