@@ -133,7 +133,7 @@ def test_cloned_symbols_keep_official_size_offsets_and_group_geometry():
         parts = _workbook_parts(archive)
         catalog = _symbol_anchors(archive.read(parts.symbol_drawing))
 
-    for key in ("POLE", "TR", "FU", "FC", "RL", "RG"):
+    for key in ("POLE", "TR", "FU", "FC", "RL", "RG", "OL", "SC"):
         source = catalog[key]
         clone, _ = _clone_symbol(source, Point(x=0.53, y=0.47), 900)
         source_cells = _cell_anchor_signature(source)
