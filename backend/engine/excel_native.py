@@ -38,7 +38,10 @@ CANONICAL_SYMBOLS: dict[str, str] = {
     "RG": "Group 260",
     "OL": "Text Box 261",
     "SC": "Text Box 247",
-    "POLE": "Oval 148",
+    # O poste oficial é o grupo com dois círculos concêntricos da linha
+    # "Poste existente". Oval 148 é apenas uma elipse auxiliar da mesma área
+    # da planilha e não representa a simbologia usada nos croquis finais.
+    "POLE": "Group 184",
     "WORK_ZONE": "Rectangle 334",
     "LINE_SECONDARY": "Line 429",
     "LINE_PRIMARY": "Line 430",

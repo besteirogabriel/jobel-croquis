@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from xml.etree import ElementTree as ET
 from zipfile import ZipFile
@@ -13,6 +14,7 @@ from backend.engine.excel_native import (
     _outer_xfrm,
     _q,
     _symbol_anchors,
+    _top_name,
     _workbook_parts,
     build_native_workbook,
     inspect_template,
@@ -56,6 +58,8 @@ def test_native_symbols_are_cloned_from_official_sheet(tmp_path: Path):
     with ZipFile(output) as archive:
         drawing = archive.read("xl/drawings/drawing1.xml").decode("utf-8")
     assert 'name="Group 729"' in drawing
+    assert 'name="Group 184"' in drawing
+    assert 'name="Oval 148"' not in drawing
     assert 'name="Rectangle 334"' in drawing
     assert drawing.count('name="Line 430"') == 2
     assert "Jobel Label" in drawing
@@ -105,6 +109,24 @@ def _internal_transform_signature(anchor: ET.Element) -> tuple[list[tuple[str, s
     return offsets, child_offsets
 
 
+def _normalized_object_xml(anchor: ET.Element) -> bytes:
+    normalized = copy.deepcopy(anchor)
+    for marker in ("from", "to"):
+        node = normalized.find(_q(NS_XDR, marker))
+        assert node is not None
+        for field in ("col", "row"):
+            child = node.find(_q(NS_XDR, field))
+            assert child is not None
+            child.text = "0"
+    outer_offset = _outer_xfrm(normalized).find(_q(NS_A, "off"))
+    assert outer_offset is not None
+    outer_offset.set("x", "0")
+    outer_offset.set("y", "0")
+    for index, prop in enumerate(normalized.findall(f".//{_q(NS_XDR, 'cNvPr')}")):
+        prop.set("id", str(index))
+    return ET.tostring(normalized)
+
+
 def test_cloned_symbols_keep_official_size_offsets_and_group_geometry():
     template = Path("backend/assets/modelo_croqui_oficial.xlsx")
     with ZipFile(template) as archive:
@@ -136,3 +158,18 @@ def test_cloned_symbols_keep_official_size_offsets_and_group_geometry():
         # Clonar muda posição, nunca extensão ou coordenadas internas do grupo.
         assert _offset_and_extent(clone)[2:] == _offset_and_extent(source)[2:]
         assert _internal_transform_signature(clone) == _internal_transform_signature(source)
+        assert _normalized_object_xml(clone) == _normalized_object_xml(source)
+
+
+def test_pole_catalog_uses_concentric_official_symbol_instead_of_plain_oval():
+    template = Path("backend/assets/modelo_croqui_oficial.xlsx")
+    with ZipFile(template) as archive:
+        parts = _workbook_parts(archive)
+        pole = _symbol_anchors(archive.read(parts.symbol_drawing))["POLE"]
+
+    assert _top_name(pole) == "Group 184"
+    assert pole.find(_q(NS_XDR, "grpSp")) is not None
+    assert [
+        geometry.attrib.get("prst")
+        for geometry in pole.findall(f".//{_q(NS_A, 'prstGeom')}")
+    ] == ["ellipse", "ellipse"]
