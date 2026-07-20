@@ -4,7 +4,6 @@ let job = "";
 const statusLabels = {
   GENERATED: "Croqui gerado e validado",
   NEEDS_REVIEW: "Motor bloqueou a geração: revisão necessária",
-  TEMPLATE_REQUIRED: "Decisão pronta; falta o Excel oficial com a aba Simbologia",
   READY_TO_GENERATE: "Plano técnico validado",
 };
 

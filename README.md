@@ -18,6 +18,8 @@ O fluxo é fixo:
 
 Não existe substituição por SVG, ícone aproximado ou imagem raster. Se um objeto oficial estiver ausente, a geração falha explicitamente.
 
+O usuário envia **somente o projeto elétrico em PDF**. O modelo oficial sanitizado fica versionado em `backend/assets/modelo_croqui_oficial.xlsx`; a interface e a API não aceitam upload de modelo ou simbologia.
+
 ## Símbolos exigidos no modelo
 
 | Elemento | Nome interno oficial |
@@ -35,7 +37,7 @@ Não existe substituição por SVG, ícone aproximado ou imagem raster. Se um ob
 | Rede primária — tracejada | `Line 430` |
 | Rede projetada — marrom | `Line 431` |
 
-O logo RGE já existente na aba de croqui é preservado sem reconstrução.
+O logo RGE já existente na aba de croqui é preservado sem reconstrução. O asset interno não contém diagrama, identificadores ou dados de uma obra usada como referência.
 
 ## Executar com Docker
 
@@ -56,11 +58,11 @@ OPENAI_MODEL=gpt-5.6-sol
 
 A chave não é enviada ao navegador, não aparece nas respostas e não é gravada nos relatórios. Com `AI_ENABLED=false`, nenhuma chamada externa é realizada.
 
-## Cadastro de rede
+## Cadastro de rede interno
 
 Alguns projetos mostram apenas o transformador da intervenção; o número do fusível ou religador a montante não existe no PDF. Nesses casos, nenhum modelo de IA consegue determinar o número exato com segurança sem o cadastro da rede.
 
-O upload opcional de cadastro aceita `.csv`, `.xls` ou `.xlsx`. A primeira linha deve identificar estas informações (os nomes abaixo e equivalentes em inglês são reconhecidos):
+Quando existir uma base corporativa, ela pode ser configurada exclusivamente no backend com `NETWORK_REGISTRY_PATH`. Não há upload desse arquivo na tela. O arquivo interno aceita `.csv`, `.xls` ou `.xlsx`, e a primeira linha deve identificar estas informações (os nomes abaixo e equivalentes em inglês são reconhecidos):
 
 | Informação | Exemplo de coluna |
 |---|---|
@@ -82,7 +84,6 @@ O vínculo cadastral é evidência local de alta confiança e também é enviado
 
 - `GENERATED`: validação aprovada e Excel/PDF gerados;
 - `NEEDS_REVIEW`: identificação ou topologia bloqueada;
-- `TEMPLATE_REQUIRED`: plano aprovado, mas falta o Excel oficial;
 - `READY_TO_GENERATE`: plano validado antes da exportação.
 
 ## Artefatos
@@ -107,10 +108,12 @@ pytest -q
 ruff check backend tests
 ```
 
-O teste de clonagem real pode receber um modelo oficial convertido para `.xlsx`:
+Os testes validam o modelo interno real: presença de todos os objetos oficiais da aba `Simbologia`, preservação do logo RGE, remoção dos dados da obra de origem e clonagem nativa dos objetos para um novo croqui.
+
+Para atualizar o asset a partir de outro croqui oficial já convertido para `.xlsx`:
 
 ```bash
-JOBEL_REFERENCE_TEMPLATE=/caminho/modelo-oficial.xlsx pytest -q tests/test_native_excel.py
+python -m scripts.build_official_template /caminho/croqui-oficial.xlsx
 ```
 
-Os arquivos de clientes usados na regressão não são versionados no repositório.
+O sanitizador mantém a aba `Simbologia` byte a byte, preserva somente as imagens do cabeçalho na aba `Croqui` e remove o diagrama e os dados do projeto de origem.

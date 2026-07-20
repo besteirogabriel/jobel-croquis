@@ -83,10 +83,11 @@ def fallback_plan(number: str = "740342") -> CroquiPlan:
 def run_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, local: LocalExtraction, fallback: Fallback):
     monkeypatch.setattr("backend.engine.service.extract_project", lambda _, **__: local)
     engine = CroquiEngine(settings(), fallback=fallback)
+    monkeypatch.setattr(engine, "_export", lambda *_: None)
     return engine.run(
         job_id="0123456789ab",
         project=tmp_path / "project.pdf",
-        template=None,
+        template=Path("backend/assets/modelo_croqui_oficial.xlsx"),
         job_dir=tmp_path,
     )
 

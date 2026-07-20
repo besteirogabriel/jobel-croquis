@@ -16,8 +16,17 @@ NS_REL_PACKAGE = "http://schemas.openxmlformats.org/package/2006/relationships"
 NS_XDR = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
 NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 NS_R = NS_REL_DOC
+NS_CP = "http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+NS_DC = "http://purl.org/dc/elements/1.1/"
 
-for prefix, uri in (("", NS_MAIN), ("xdr", NS_XDR), ("a", NS_A), ("r", NS_R)):
+for prefix, uri in (
+    ("", NS_MAIN),
+    ("xdr", NS_XDR),
+    ("a", NS_A),
+    ("r", NS_R),
+    ("cp", NS_CP),
+    ("dc", NS_DC),
+):
     ET.register_namespace(prefix, uri)
 
 
@@ -373,6 +382,151 @@ def _update_sheet(payload: bytes, metadata: ProjectMetadata, equipment_label: st
     for reference, value in values.items():
         _set_inline_cell(root, reference, value)
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+OFFICIAL_HEADER_CELLS = {"I5", "AA5", "AP5", "I6", "AH6"}
+OFFICIAL_VIABILITY_CELLS = {f"AQ{row}" for row in range(33, 43)}
+
+
+def _shared_string_references(sheet_payload: bytes, only: set[str] | None = None) -> set[int]:
+    root = ET.fromstring(sheet_payload)
+    result: set[int] = set()
+    for cell in root.findall(f".//{_q(NS_MAIN, 'c')}"):
+        if cell.attrib.get("t") != "s":
+            continue
+        if only is not None and cell.attrib.get("r") not in only:
+            continue
+        value = cell.find(_q(NS_MAIN, "v"))
+        if value is not None and value.text is not None:
+            result.add(int(value.text))
+    return result
+
+
+def _remove_unused_header_strings(payloads: dict[str, bytes], header_indices: set[int]) -> None:
+    shared_path = "xl/sharedStrings.xml"
+    if not header_indices or shared_path not in payloads:
+        return
+    still_used: set[int] = set()
+    for path, payload in payloads.items():
+        if path.startswith("xl/worksheets/") and path.endswith(".xml"):
+            still_used.update(_shared_string_references(payload))
+    root = ET.fromstring(payloads[shared_path])
+    strings = root.findall(_q(NS_MAIN, "si"))
+    for index in header_indices - still_used:
+        if index >= len(strings):
+            continue
+        item = strings[index]
+        for child in list(item):
+            item.remove(child)
+        ET.SubElement(item, _q(NS_MAIN, "t")).text = ""
+    payloads[shared_path] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _sanitize_core_properties(payload: bytes) -> bytes:
+    root = ET.fromstring(payload)
+    replacements = {
+        _q(NS_DC, "creator"): "JOBEL Engenharia",
+        _q(NS_CP, "lastModifiedBy"): "JOBEL Engenharia",
+        _q(NS_DC, "title"): "Modelo oficial de croquis",
+    }
+    for tag, value in replacements.items():
+        node = root.find(tag)
+        if node is None:
+            node = ET.SubElement(root, tag)
+        node.text = value
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _set_formula_cell(sheet: ET.Element, reference: str, formula: str) -> None:
+    match = re.fullmatch(r"([A-Z]+)(\d+)", reference)
+    if not match:
+        raise ValueError(reference)
+    row_number = match.group(2)
+    row = next(
+        (item for item in sheet.findall(f".//{_q(NS_MAIN, 'row')}") if item.attrib.get("r") == row_number),
+        None,
+    )
+    if row is None:
+        raise TemplateError(f"célula oficial ausente: {reference}")
+    cell = next((item for item in row.findall(_q(NS_MAIN, "c")) if item.attrib.get("r") == reference), None)
+    if cell is None:
+        raise TemplateError(f"célula oficial ausente: {reference}")
+    for child in list(cell):
+        cell.remove(child)
+    cell.attrib.pop("t", None)
+    ET.SubElement(cell, _q(NS_MAIN, "f")).text = formula
+
+
+def _sanitize_viability(payload: bytes) -> bytes:
+    root = ET.fromstring(payload)
+    for row in range(33, 43):
+        _set_inline_cell(root, f"AQ{row}", "")
+        _set_formula_cell(root, f"AW{row}", f'IF(AQ{row}="","",IF(AQ{row}="Sim",1,0))')
+    _set_formula_cell(root, "AU32", 'IF(COUNT(AW33:AW40)=0,"",AVERAGE(AW33:AW40))')
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def create_official_template(source: Path, output: Path) -> Path:
+    """Cria o asset interno sem diagrama ou dados de uma obra específica.
+
+    A aba Simbologia não é reconstruída: seu DrawingML é copiado byte a byte.
+    Na aba Croqui ficam apenas o desenho do formulário e as imagens do
+    cabeçalho, incluindo o logo RGE.
+    """
+
+    with ZipFile(source, "r") as archive:
+        parts = _workbook_parts(archive)
+        symbol_payload = archive.read(parts.symbol_drawing)
+        _symbol_anchors(symbol_payload)
+        payloads = {entry.filename: archive.read(entry.filename) for entry in archive.infolist()}
+        private_indices = _shared_string_references(
+            payloads[parts.croqui_sheet],
+            OFFICIAL_HEADER_CELLS | OFFICIAL_VIABILITY_CELLS,
+        )
+
+        croqui_root = ET.fromstring(payloads[parts.croqui_drawing])
+        pictures = [
+            copy.deepcopy(anchor)
+            for anchor in list(croqui_root)
+            if anchor.find(f".//{_q(NS_XDR, 'pic')}") is not None
+        ]
+        if not pictures:
+            raise TemplateError("o modelo de origem não contém o logo oficial no cabeçalho")
+        for anchor in list(croqui_root):
+            croqui_root.remove(anchor)
+        for picture in pictures:
+            croqui_root.append(picture)
+        payloads[parts.croqui_drawing] = ET.tostring(
+            croqui_root,
+            encoding="utf-8",
+            xml_declaration=True,
+        )
+        payloads[parts.croqui_sheet] = _update_sheet(
+            payloads[parts.croqui_sheet],
+            ProjectMetadata(departamento="SERRA"),
+            "",
+        )
+        payloads[parts.croqui_sheet] = _sanitize_viability(payloads[parts.croqui_sheet])
+        _remove_unused_header_strings(payloads, private_indices)
+        if "docProps/core.xml" in payloads:
+            payloads["docProps/core.xml"] = _sanitize_core_properties(payloads["docProps/core.xml"])
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with ZipFile(output, "w", ZIP_DEFLATED) as target:
+            for entry in archive.infolist():
+                target.writestr(entry, payloads[entry.filename])
+
+    inspect_template(output)
+    with ZipFile(output) as archive:
+        parts = _workbook_parts(archive)
+        if archive.read(parts.symbol_drawing) != symbol_payload:
+            raise TemplateError("a aba Simbologia foi alterada durante a sanitização")
+        croqui_root = ET.fromstring(archive.read(parts.croqui_drawing))
+        if not list(croqui_root) or any(
+            anchor.find(f".//{_q(NS_XDR, 'pic')}") is None for anchor in list(croqui_root)
+        ):
+            raise TemplateError("o modelo interno ainda contém objetos de uma obra")
+    return output
 
 
 def build_native_workbook(template: Path, output: Path, plan: CroquiPlan, metadata: ProjectMetadata) -> Path:

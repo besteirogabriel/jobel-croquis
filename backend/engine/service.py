@@ -50,7 +50,7 @@ class CroquiEngine:
         *,
         job_id: str,
         project: Path,
-        template: Path | None,
+        template: Path,
         registry: Path | None = None,
         job_dir: Path,
     ) -> EngineResult:
@@ -114,10 +114,7 @@ class CroquiEngine:
             ai_used=ai_used,
         )
         if validation.accepted:
-            if template is None:
-                result.status = "TEMPLATE_REQUIRED"
-            else:
-                self._export(result, template, job_dir)
+            self._export(result, template, job_dir)
         self._write_report(result, job_dir)
         return result
 
@@ -126,7 +123,7 @@ class CroquiEngine:
         *,
         job_id: str,
         project: Path,
-        template: Path | None,
+        template: Path,
         registry: Path | None = None,
         job_dir: Path,
         equipment_type: str,
@@ -194,10 +191,8 @@ class CroquiEngine:
             plan=plan,
             validation=validation,
         )
-        if validation.accepted and template is not None:
+        if validation.accepted:
             self._export(result, template, job_dir)
-        elif validation.accepted:
-            result.status = "TEMPLATE_REQUIRED"
         self._write_report(result, job_dir)
         return result
 

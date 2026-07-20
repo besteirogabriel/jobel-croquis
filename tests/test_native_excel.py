@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
+from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
-import pytest
-
-from backend.engine.excel_native import CANONICAL_SYMBOLS, build_native_workbook, inspect_template
+from backend.engine.excel_native import (
+    CANONICAL_SYMBOLS,
+    NS_XDR,
+    _q,
+    _workbook_parts,
+    build_native_workbook,
+    inspect_template,
+)
 from backend.engine.models import (
     CroquiPlan,
     EquipmentPlacement,
@@ -17,9 +22,8 @@ from backend.engine.models import (
 )
 
 
-@pytest.mark.skipif(not os.getenv("JOBEL_REFERENCE_TEMPLATE"), reason="modelo oficial não configurado")
 def test_native_symbols_are_cloned_from_official_sheet(tmp_path: Path):
-    template = Path(os.environ["JOBEL_REFERENCE_TEMPLATE"])
+    template = Path("backend/assets/modelo_croqui_oficial.xlsx")
     catalog = inspect_template(template)
     for key, official_name in CANONICAL_SYMBOLS.items():
         assert catalog[key] == official_name
@@ -50,3 +54,21 @@ def test_native_symbols_are_cloned_from_official_sheet(tmp_path: Path):
     assert 'name="Rectangle 334"' in drawing
     assert drawing.count('name="Line 430"') == 2
     assert "Jobel Label" in drawing
+
+
+def test_bundled_template_is_sanitized_and_keeps_rge_logo():
+    template = Path("backend/assets/modelo_croqui_oficial.xlsx")
+    with ZipFile(template) as archive:
+        parts = _workbook_parts(archive)
+        drawing = ET.fromstring(archive.read(parts.croqui_drawing))
+        assert len(list(drawing)) == 1
+        assert drawing.find(f".//{_q(NS_XDR, 'pic')}") is not None
+        sheet = ET.fromstring(archive.read(parts.croqui_sheet))
+        viability = next(
+            cell for cell in sheet.findall(".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c")
+            if cell.attrib.get("r") == "AQ33"
+        )
+        assert "".join(viability.itertext()) == ""
+        contents = b"\n".join(archive.read(name) for name in archive.namelist())
+    for customer_value in (b"1130054", b"770053", b"Luiz Fernando", b"CAXIAS DO SUL"):
+        assert customer_value not in contents

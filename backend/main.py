@@ -7,12 +7,12 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .engine import CroquiEngine
-from .engine.excel_native import TemplateError
+from .engine.excel_native import inspect_template
 from .engine.models import EquipmentType
 from .engine.office import OfficeError
 
@@ -59,52 +59,74 @@ async def _save_upload(upload: UploadFile, destination: Path, allowed: set[str])
     return destination
 
 
-def _run_engine(job_id: str, folder: Path, template: Path | None, registry: Path | None):
+def _official_template() -> Path:
+    template = settings.official_template_path
+    if not template.is_absolute():
+        template = BASE_DIR / template
+    if not template.is_file():
+        raise HTTPException(500, "Modelo oficial interno não encontrado")
+    try:
+        inspect_template(template)
+    except Exception as exc:
+        raise HTTPException(500, f"Modelo oficial interno inválido: {exc}") from exc
+    return template
+
+
+def _network_registry() -> Path | None:
+    registry = settings.network_registry_path
+    if registry is None:
+        return None
+    if not registry.is_absolute():
+        registry = BASE_DIR / registry
+    if not registry.is_file():
+        raise HTTPException(500, "Cadastro de rede configurado no servidor não foi encontrado")
+    if registry.suffix.lower() not in {".csv", ".xls", ".xlsx"}:
+        raise HTTPException(500, "Cadastro de rede interno deve ser .csv, .xls ou .xlsx")
+    return registry
+
+
+def _run_engine(job_id: str, folder: Path):
     try:
         return engine.run(
             job_id=job_id,
             project=folder / "projeto.pdf",
-            template=template,
-            registry=registry,
+            template=_official_template(),
+            registry=_network_registry(),
             job_dir=folder,
         )
-    except (TemplateError, OfficeError) as exc:
+    except OfficeError as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
 @app.get("/api/health")
-def health() -> dict:
-    return {
-        "ok": True,
-        "engine": "local-first",
-        "ai": "fallback_disponivel" if settings.ai_enabled and settings.openai_api_key else "offline",
-    }
+def health() -> JSONResponse:
+    template_ready = False
+    try:
+        _official_template()
+        template_ready = True
+    except HTTPException:
+        pass
+    return JSONResponse(
+        status_code=200 if template_ready else 503,
+        content={
+            "ok": template_ready,
+            "engine": "local-first",
+            "modelo_oficial": "pronto" if template_ready else "indisponivel",
+            "ai": (
+                "fallback_disponivel" if settings.ai_enabled and settings.openai_api_key else "offline"
+            ),
+        },
+    )
 
 
 @app.post("/api/analisar")
-async def analisar(
-    projeto: UploadFile = File(...),
-    modelo: UploadFile | None = File(None),
-    cadastro: UploadFile | None = File(None),
-):
+async def analisar(projeto: UploadFile = File(...)):
     job_id = uuid.uuid4().hex[:12]
     folder = _job_dir(job_id)
     folder.mkdir(parents=True, exist_ok=False)
     try:
         await _save_upload(projeto, folder / "projeto.pdf", {".pdf"})
-        template: Path | None = None
-        if modelo is not None:
-            suffix = Path(modelo.filename or "").suffix.lower()
-            template = await _save_upload(modelo, folder / f"modelo{suffix}", {".xls", ".xlsx"})
-        registry: Path | None = None
-        if cadastro is not None:
-            suffix = Path(cadastro.filename or "").suffix.lower()
-            registry = await _save_upload(
-                cadastro,
-                folder / f"cadastro{suffix}",
-                {".xls", ".xlsx", ".csv"},
-            )
-        return _run_engine(job_id, folder, template, registry).public_dict()
+        return _run_engine(job_id, folder).public_dict()
     except Exception:
         # Uploads inválidos não deixam jobs órfãos; resultados de motor são
         # preservados pelo relatório quando a execução chegou a esse ponto.
@@ -130,27 +152,18 @@ def confirmar(
         raise HTTPException(400, "Tipo inválido. Use TR, FU, FC, RL, RG, OL ou SC") from exc
     if not re.fullmatch(r"\d{5,8}", numero):
         raise HTTPException(400, "Número de equipamento inválido")
-    template = next((path for path in (folder / "modelo.xls", folder / "modelo.xlsx") if path.exists()), None)
-    registry = next(
-        (
-            path
-            for path in (folder / "cadastro.xls", folder / "cadastro.xlsx", folder / "cadastro.csv")
-            if path.exists()
-        ),
-        None,
-    )
     try:
         result = engine.override(
             job_id=job_id,
             project=project,
-            template=template,
-            registry=registry,
+            template=_official_template(),
+            registry=_network_registry(),
             job_dir=folder,
             equipment_type=equipment_type,
             number=numero,
             observations=observacoes,
         )
-    except (TemplateError, OfficeError) as exc:
+    except OfficeError as exc:
         raise HTTPException(422, str(exc)) from exc
     return result.public_dict()
 

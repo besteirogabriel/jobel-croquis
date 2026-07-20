@@ -4,6 +4,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+BACKEND_DIR = Path(__file__).resolve().parent
+
 
 class Settings(BaseSettings):
     """Configurações exclusivamente do backend.
@@ -23,6 +25,8 @@ class Settings(BaseSettings):
     max_upload_mb: int = 50
     expose_api_docs: bool = False
     data_dir: Path = Path("/data")
+    official_template_path: Path = BACKEND_DIR / "assets" / "modelo_croqui_oficial.xlsx"
+    network_registry_path: Path | None = None
     libreoffice_bin: str = "soffice"
     pdftoppm_bin: str = "pdftoppm"
     ocr_enabled: bool = True
