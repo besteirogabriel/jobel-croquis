@@ -64,7 +64,7 @@ A chave não é enviada ao navegador, não aparece nas respostas e não é grava
 
 ## Corpus oficial
 
-Os 155 diretórios devem ficar em `CROQUI IA/` na raiz. Essa pasta é ignorada pelo Git e pelo contexto
+Os diretórios homologados devem ficar em `CROQUI IA/` na raiz. Essa pasta é ignorada pelo Git e pelo contexto
 de build para não publicar os projetos em um repositório público; o Docker a monta em modo somente
 leitura no backend. No primeiro start, o sistema cria um manifesto determinístico em `/data/training`.
 
