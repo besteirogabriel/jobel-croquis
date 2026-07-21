@@ -45,6 +45,7 @@ def validate_plan(
     extraction: LocalExtraction,
     *,
     automatic_threshold: float,
+    assisted_threshold: float | None = None,
     allow_manual_number: bool = False,
 ) -> ValidationResult:
     issues: list[ValidationIssue] = []
@@ -75,10 +76,17 @@ def validate_plan(
                 )
             )
     if plan.source not in {"manual"} and plan.confidence < automatic_threshold:
+        minimum = automatic_threshold if assisted_threshold is None else assisted_threshold
+        blocking = plan.confidence < minimum
         issues.append(
             ValidationIssue(
-                code="LOW_CONFIDENCE",
-                message=f"confiança {plan.confidence:.2f} abaixo do mínimo {automatic_threshold:.2f}",
+                code="LOW_CONFIDENCE" if blocking else "CONFIDENCE_REVIEW",
+                message=(
+                    f"confiança {plan.confidence:.2f} abaixo do mínimo {minimum:.2f}"
+                    if blocking
+                    else f"confiança {plan.confidence:.2f}: croqui gerado para conferência técnica"
+                ),
+                blocking=blocking,
             )
         )
     if len(plan.segments) < 2:

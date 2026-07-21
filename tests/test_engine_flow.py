@@ -48,6 +48,7 @@ def settings() -> SimpleNamespace:
         openai_model="test",
         openai_timeout_seconds=1,
         local_auto_threshold=0.82,
+        assisted_generation_threshold=0.0,
         local_min_gap=0.12,
         libreoffice_bin="soffice",
         local_fast_path_enabled=False,
@@ -156,6 +157,30 @@ def test_weak_local_result_calls_fallback(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert result.ai_used is True
     assert result.validation.accepted is True
     assert result.plan.source == "openai_fallback"
+
+
+def test_intermediate_confidence_generates_for_technical_review(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    proposal = fallback_plan()
+    proposal.confidence = 0.72
+    result = run_with(monkeypatch, tmp_path, extraction(score=0.55), Fallback(proposal))
+
+    assert result.validation.accepted is True
+    issue = next(item for item in result.validation.issues if item.code == "CONFIDENCE_REVIEW")
+    assert issue.blocking is False
+
+
+def test_low_confidence_alone_does_not_block_assisted_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    proposal = fallback_plan()
+    proposal.confidence = 0.05
+    result = run_with(monkeypatch, tmp_path, extraction(score=0.55), Fallback(proposal))
+
+    assert result.validation.accepted is True
+    issue = next(item for item in result.validation.issues if item.code == "CONFIDENCE_REVIEW")
+    assert issue.blocking is False
 
 
 def test_hallucinated_fallback_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

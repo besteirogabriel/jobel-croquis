@@ -32,10 +32,13 @@ function setFacts(data) {
 function setStatus(data) {
   const root = $("#engine-status");
   root.replaceChildren();
-  const title = document.createElement("strong");
-  title.textContent = statusLabels[data.status] || data.status;
-  root.append(title);
   const issues = (data.validation && data.validation.issues) || [];
+  const generatedForReview = data.status === "GENERATED" && issues.some((issue) => !issue.blocking);
+  const title = document.createElement("strong");
+  title.textContent = generatedForReview
+    ? "Croqui gerado para conferência"
+    : statusLabels[data.status] || data.status;
+  root.append(title);
   if (issues.length) {
     const list = document.createElement("ul");
     for (const issue of issues) {
@@ -45,7 +48,11 @@ function setStatus(data) {
     }
     root.append(list);
   }
-  root.className = data.status === "GENERATED" ? "engine-status ok" : "engine-status";
+  root.className = generatedForReview
+    ? "engine-status review"
+    : data.status === "GENERATED"
+      ? "engine-status ok"
+      : "engine-status";
 }
 
 function setDownloads(data) {

@@ -80,9 +80,9 @@ class CroquiEngine:
                 self.fallback = CodexPlanFallback(
                     binary=getattr(settings, "codex_bin", "codex"),
                     model=getattr(settings, "codex_model", "gpt-5.6-sol"),
-                    reasoning_effort=getattr(settings, "codex_reasoning_effort", "high"),
-                    timeout=getattr(settings, "codex_timeout_seconds", 600.0),
-                    max_project_pages=getattr(settings, "codex_max_project_pages", 6),
+                    reasoning_effort=getattr(settings, "codex_reasoning_effort", "low"),
+                    timeout=getattr(settings, "codex_timeout_seconds", 120.0),
+                    max_project_pages=getattr(settings, "codex_max_project_pages", 2),
                 )
             elif provider == "openai" and settings.openai_api_key:
                 self.fallback = OpenAIPlanFallback(
@@ -137,6 +137,11 @@ class CroquiEngine:
                     local_plan,
                     extraction,
                     automatic_threshold=self.settings.local_auto_threshold,
+                    assisted_threshold=getattr(
+                        self.settings,
+                        "assisted_generation_threshold",
+                        self.settings.local_auto_threshold,
+                    ),
                 )
             plan = local_plan
             validation = local_validation
@@ -168,6 +173,11 @@ class CroquiEngine:
                             proposal,
                             extraction,
                             automatic_threshold=self.settings.local_auto_threshold,
+                            assisted_threshold=getattr(
+                                self.settings,
+                                "assisted_generation_threshold",
+                                self.settings.local_auto_threshold,
+                            ),
                         )
                     validation = proposal_validation
                     if not local_validation.accepted:
@@ -366,6 +376,11 @@ class CroquiEngine:
                     plan,
                     extraction,
                     automatic_threshold=self.settings.local_auto_threshold,
+                    assisted_threshold=getattr(
+                        self.settings,
+                        "assisted_generation_threshold",
+                        self.settings.local_auto_threshold,
+                    ),
                     allow_manual_number=True,
                 )
             result = EngineResult(
