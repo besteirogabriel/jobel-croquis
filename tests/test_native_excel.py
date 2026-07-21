@@ -113,7 +113,7 @@ def _normalized_object_xml(anchor: ET.Element) -> bytes:
     for marker in ("from", "to"):
         node = normalized.find(_q(NS_XDR, marker))
         assert node is not None
-        for field in ("col", "row"):
+        for field in ("col", "colOff", "row", "rowOff"):
             child = node.find(_q(NS_XDR, field))
             assert child is not None
             child.text = "0"
@@ -135,24 +135,15 @@ def test_cloned_symbols_keep_official_size_offsets_and_group_geometry():
     for key in ("POLE", "TR", "FU", "FC", "RL", "RG", "OL", "SC"):
         source = catalog[key]
         clone, _ = _clone_symbol(source, Point(x=0.53, y=0.47), 900)
-        source_cells = _cell_anchor_signature(source)
         clone_cells = _cell_anchor_signature(clone)
 
-        # A caixa e os offsets fracionários da âncora oficial são preservados.
-        assert clone_cells["to"][0] - clone_cells["from"][0] == (
-            source_cells["to"][0] - source_cells["from"][0]
-        )
-        assert clone_cells["to"][2] - clone_cells["from"][2] == (
-            source_cells["to"][2] - source_cells["from"][2]
-        )
-        assert clone_cells["from"][1::2] == source_cells["from"][1::2]
-        assert clone_cells["to"][1::2] == source_cells["to"][1::2]
-        assert clone_cells["to"][0] - source_cells["to"][0] == (
-            clone_cells["from"][0] - source_cells["from"][0]
-        )
-        assert clone_cells["to"][2] - source_cells["to"][2] == (
-            clone_cells["from"][2] - source_cells["from"][2]
-        )
+        # A caixa da âncora usa tamanho físico exato e não atravessa células;
+        # assim a grade diferente da aba Croqui não deforma o símbolo.
+        assert clone_cells["to"][0] == clone_cells["from"][0]
+        assert clone_cells["to"][2] == clone_cells["from"][2]
+        assert clone_cells["from"][1::2] == (0, 0)
+        assert clone_cells["to"][1] == _offset_and_extent(source)[2]
+        assert clone_cells["to"][3] == _offset_and_extent(source)[3]
 
         # Clonar muda posição, nunca extensão ou coordenadas internas do grupo.
         assert _offset_and_extent(clone)[2:] == _offset_and_extent(source)[2:]

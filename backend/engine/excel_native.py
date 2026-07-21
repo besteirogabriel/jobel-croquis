@@ -237,6 +237,23 @@ def _translate_anchor_cells(anchor: ET.Element, dx: int, dy: int) -> None:
         row.text = str(int(row.text or "0") + delta_row)
 
 
+def _set_symbol_anchor_box(anchor: ET.Element, point: Point, width: int, height: int) -> None:
+    """Preserva o tamanho físico do símbolo, independentemente da grade da aba."""
+    start_col = 2 + round(point.x * 42)
+    start_row = 7 + round(point.y * 24)
+    origin = anchor.find(_q(NS_XDR, "from"))
+    destination = anchor.find(_q(NS_XDR, "to"))
+    if origin is None or destination is None:
+        return
+    for node in (origin, destination):
+        node.find(_q(NS_XDR, "col")).text = str(start_col)
+        node.find(_q(NS_XDR, "row")).text = str(start_row)
+    origin.find(_q(NS_XDR, "colOff")).text = "0"
+    origin.find(_q(NS_XDR, "rowOff")).text = "0"
+    destination.find(_q(NS_XDR, "colOff")).text = str(width)
+    destination.find(_q(NS_XDR, "rowOff")).text = str(height)
+
+
 def _set_anchor_cells(anchor: ET.Element, point: Point, span_col: int = 2, span_row: int = 2) -> None:
     start_col = 2 + round(point.x * 42)
     start_row = 7 + round(point.y * 24)
@@ -285,7 +302,7 @@ def _clone_symbol(source: ET.Element, point: Point, next_id: int) -> tuple[ET.El
     dx = target_x - (x + width // 2)
     dy = target_y - (y + height // 2)
     _shift_anchor(anchor, dx, dy)
-    _translate_anchor_cells(anchor, dx, dy)
+    _set_symbol_anchor_box(anchor, point, width, height)
     return anchor, _renumber(anchor, next_id)
 
 
