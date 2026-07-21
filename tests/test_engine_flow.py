@@ -49,7 +49,7 @@ def settings() -> SimpleNamespace:
         local_auto_threshold=0.82,
         local_min_gap=0.12,
         libreoffice_bin="soffice",
-        local_fast_path_enabled=True,
+        local_fast_path_enabled=False,
         local_fast_path_threshold=0.9,
     )
 
@@ -96,13 +96,15 @@ def run_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, local: LocalExtrac
     )
 
 
-def test_strong_local_result_skips_slow_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_strong_local_result_still_requires_complete_analysis(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     fallback = Fallback(fallback_plan())
     result = run_with(monkeypatch, tmp_path, extraction(), fallback)
     assert result.validation.accepted is True
-    assert result.plan.source == "local"
-    assert result.ai_used is False
-    assert fallback.calls == 0
+    assert result.plan.source == "openai_fallback"
+    assert result.ai_used is True
+    assert fallback.calls == 1
 
 
 def test_blocked_local_result_calls_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -132,7 +134,9 @@ def test_hallucinated_fallback_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_
     assert any(issue.code == "MAIN_EQUIPMENT_NOT_IN_PROJECT" for issue in result.validation.issues)
 
 
-def test_accepted_local_plan_survives_invalid_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_invalid_fallback_does_not_publish_accepted_local_geometry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     fallback = Fallback(fallback_plan(number="9999999"))
     local_settings = settings()
     local_settings.local_fast_path_enabled = False
@@ -146,9 +150,9 @@ def test_accepted_local_plan_survives_invalid_fallback(monkeypatch: pytest.Monke
         job_dir=tmp_path,
     )
     assert fallback.calls == 1
-    assert result.validation.accepted is True
-    assert result.plan.source == "local"
-    assert result.plan.main_equipment.number == "900001"
+    assert result.validation.accepted is False
+    assert result.plan.source == "openai_fallback"
+    assert result.plan.main_equipment.number == "9999999"
 
 
 def test_poles_follow_dominant_network_vertices():

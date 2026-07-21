@@ -33,6 +33,15 @@ engine = CroquiEngine(settings)
 logger = logging.getLogger(__name__)
 
 
+@app.middleware("http")
+async def disable_public_ui_cache(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 def _job_dir(job_id: str) -> Path:
     if not JOB_ID_RE.fullmatch(job_id):
         raise HTTPException(400, "Identificador de processamento inválido")

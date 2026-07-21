@@ -17,6 +17,15 @@ def test_health():
     assert "ai" not in response.json()
 
 
+def test_public_ui_is_never_served_from_stale_cache():
+    client = TestClient(app)
+    for path in ("/", "/assets/app.js"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store, max-age=0"
+        assert response.headers["pragma"] == "no-cache"
+
+
 def test_analysis_api_accepts_only_project_pdf():
     assert list(inspect.signature(analisar).parameters) == ["projeto"]
 

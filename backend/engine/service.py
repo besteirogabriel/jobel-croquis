@@ -165,11 +165,7 @@ class CroquiEngine:
                             extraction,
                             automatic_threshold=self.settings.local_auto_threshold,
                         )
-                    if not proposal_validation.accepted and local_validation.accepted:
-                        local_plan.rationale.append("análise complementar descartada pela validação técnica")
-                        plan, validation = local_plan, local_validation
-                    else:
-                        validation = proposal_validation
+                    validation = proposal_validation
                     if not local_validation.accepted:
                         plan.rationale.append("pré-análise local exigia revisão")
                 except Exception:
