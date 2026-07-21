@@ -87,8 +87,16 @@ fetch("/api/health")
 $("#upload").onsubmit = async (event) => {
   event.preventDefault();
   const button = event.submitter;
+  const startedAt = Date.now();
+  const updateElapsed = () => {
+    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+    const minutes = Math.floor(elapsed / 60);
+    const seconds = String(elapsed % 60).padStart(2, "0");
+    button.textContent = `Analisando… ${minutes}:${seconds}`;
+  };
   button.disabled = true;
-  button.textContent = "Analisando…";
+  updateElapsed();
+  const elapsedTimer = window.setInterval(updateElapsed, 1000);
   try {
     const response = await fetch("/api/analisar", { method: "POST", body: new FormData(event.target) });
     if (!response.ok) throw new Error(await responseError(response));
@@ -104,6 +112,7 @@ $("#upload").onsubmit = async (event) => {
   } catch (error) {
     alert(error.message);
   } finally {
+    window.clearInterval(elapsedTimer);
     button.disabled = false;
     button.textContent = "Analisar projeto";
   }

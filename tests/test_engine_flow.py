@@ -84,6 +84,12 @@ def fallback_plan(number: str = "900001") -> CroquiPlan:
     )
 
 
+def fallback_plan_without_main_in_equipment() -> CroquiPlan:
+    plan = fallback_plan()
+    plan.equipment = []
+    return plan
+
+
 def run_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, local: LocalExtraction, fallback: Fallback):
     monkeypatch.setattr("backend.engine.service.extract_project", lambda _, **__: local)
     engine = CroquiEngine(settings(), fallback=fallback)
@@ -114,6 +120,18 @@ def test_blocked_local_result_calls_fallback(monkeypatch: pytest.MonkeyPatch, tm
     assert result.ai_used is True
     assert result.validation.accepted is True
     assert result.plan.source == "openai_fallback"
+
+
+def test_fallback_main_equipment_is_normalized_into_export_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    fallback = Fallback(fallback_plan_without_main_in_equipment())
+    result = run_with(monkeypatch, tmp_path, extraction(score=0.55), fallback)
+
+    assert result.validation.accepted is True
+    assert len(result.plan.equipment) == 1
+    assert result.plan.equipment[0] == result.plan.main_equipment
+    assert result.plan.equipment[0].main is True
 
 
 def test_weak_local_result_calls_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

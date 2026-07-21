@@ -158,6 +158,7 @@ class CroquiEngine:
                     ai_used = True
                     if proposal is None:
                         raise AIAnalysisError("Plano automático ausente.")
+                    self._normalize_main_equipment(proposal)
                     plan = proposal
                     with telemetry.measure("validacao"):
                         proposal_validation = validate_plan(
@@ -204,6 +205,24 @@ class CroquiEngine:
             return False
         threshold = getattr(self.settings, "local_fast_path_threshold", 0.9)
         return plan.confidence >= threshold
+
+    @staticmethod
+    def _normalize_main_equipment(plan: CroquiPlan) -> None:
+        """Mantém a fonte de verdade principal também na coleção exportável."""
+        main = plan.main_equipment
+        if main is None:
+            return
+        normalized_main = main.model_copy(update={"main": True})
+        others = [
+            item.model_copy(update={"main": False})
+            for item in plan.equipment
+            if not (
+                item.number == normalized_main.number
+                and item.equipment_type == normalized_main.equipment_type
+            )
+        ]
+        plan.main_equipment = normalized_main
+        plan.equipment = [normalized_main, *others]
 
     def override(
         self,
