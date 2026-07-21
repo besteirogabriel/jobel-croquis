@@ -1,7 +1,8 @@
 .env
-__pycache__/
+CROQUI IA/
+data/training/
 .pytest_cache/
-.venv/
-venv/
-*.pyc
-.DS_Store
+.ruff_cache/
+__pycache__/
+*.py[cod]
+data/
