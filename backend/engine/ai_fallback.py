@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Protocol
 
 from openai import OpenAI
 
 from backend.config import settings
-from backend.training.assets import image_data_url
+from backend.training.assets import image_data_url, render_pdf_images
 from backend.training.retrieval import RetrievedReference, retrieve_reference_cases
 
 from .models import CroquiPlan, LocalExtraction
@@ -94,6 +97,124 @@ class OpenAIPlanFallback:
         return plan
 
 
+class CodexPlanFallback:
+    """Analisador local que usa a assinatura do ChatGPT autenticada no Codex CLI."""
+
+    def __init__(
+        self,
+        *,
+        binary: str,
+        model: str,
+        reasoning_effort: str,
+        timeout: float,
+        max_project_pages: int,
+    ) -> None:
+        self.binary = binary
+        self.model = model
+        self.reasoning_effort = reasoning_effort
+        self.timeout = timeout
+        self.max_project_pages = max(1, max_project_pages)
+
+    def propose(self, pdf_path: Path, extraction: LocalExtraction) -> CroquiPlan | None:
+        executable = shutil.which(self.binary)
+        if executable is None:
+            raise AIConfigurationError("Executável do analisador local não encontrado.")
+
+        references = retrieve_reference_cases(pdf_path, extraction)
+        project_images = render_pdf_images(
+            f"runtime-{pdf_path.parent.name}",
+            f"current-project-p{self.max_project_pages}",
+            pdf_path,
+            max_pages=self.max_project_pages,
+        )
+        if not project_images:
+            raise AIAnalysisError("O projeto não pôde ser renderizado para análise visual.")
+
+        attachments, attachment_manifest = _codex_attachments(project_images, references)
+        internal_dir = pdf_path.parent / ".analysis"
+        internal_dir.mkdir(parents=True, exist_ok=True)
+        schema_path = internal_dir / "croqui-plan.schema.json"
+        output_path = internal_dir / "croqui-plan.json"
+        schema_path.write_text(
+            json.dumps(_strict_schema(CroquiPlan.model_json_schema()), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        output_path.unlink(missing_ok=True)
+
+        command = [
+            executable,
+            "--ask-for-approval",
+            "never",
+            "exec",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--disable",
+            "plugins",
+            "--disable",
+            "remote_plugin",
+            "--disable",
+            "apps",
+            "--disable",
+            "hooks",
+            "--disable",
+            "multi_agent",
+            "--sandbox",
+            "read-only",
+            "--cd",
+            str(internal_dir),
+            "--model",
+            self.model,
+            "--config",
+            f'model_reasoning_effort="{self.reasoning_effort}"',
+            "--config",
+            'web_search="disabled"',
+            "--config",
+            'cli_auth_credentials_store="file"',
+            "--config",
+            'forced_login_method="chatgpt"',
+            "--output-schema",
+            str(schema_path),
+            "--output-last-message",
+            str(output_path),
+        ]
+        for attachment in attachments:
+            command.extend(["--image", str(attachment.resolve())])
+        command.append("-")
+
+        environment = os.environ.copy()
+        # O modo Codex deve consumir a assinatura ChatGPT autenticada, mesmo que
+        # uma chave de API tenha permanecido no .env de uma instalação anterior.
+        for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"):
+            environment.pop(key, None)
+        try:
+            completed = subprocess.run(
+                command,
+                input=_codex_prompt(extraction, references, attachment_manifest),
+                text=True,
+                capture_output=True,
+                timeout=self.timeout,
+                env=environment,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise AIAnalysisError("A análise local excedeu o tempo limite configurado.") from exc
+        except OSError as exc:
+            raise AIConfigurationError("Não foi possível iniciar o analisador local.") from exc
+
+        if completed.returncode != 0:
+            _raise_codex_failure(completed)
+        if not output_path.is_file():
+            raise AIAnalysisError("O analisador local terminou sem produzir o plano estruturado.")
+        try:
+            plan = CroquiPlan.model_validate_json(output_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise AIAnalysisError("O analisador local devolveu um plano estruturado inválido.") from exc
+        plan.source = "automatic"
+        return plan
+
+
 def _technical_context(
     extraction: LocalExtraction,
     references: list[RetrievedReference],
@@ -137,3 +258,92 @@ def _reference_content(references: list[RetrievedReference]) -> list[dict]:
                 {"type": "input_image", "image_url": image_data_url(image), "detail": "high"}
             )
     return content
+
+
+def _codex_attachments(
+    project_images: list[Path],
+    references: list[RetrievedReference],
+) -> tuple[list[Path], list[dict]]:
+    attachments: list[Path] = []
+    manifest: list[dict] = []
+    for page, image in enumerate(project_images, start=1):
+        attachments.append(image)
+        manifest.append(
+            {"anexo": len(attachments), "conteudo": "projeto_atual", "pagina": page}
+        )
+    for reference_index, reference in enumerate(references, start=1):
+        for page, image in enumerate(reference.project_images, start=1):
+            attachments.append(image)
+            manifest.append(
+                {
+                    "anexo": len(attachments),
+                    "conteudo": "projeto_referencia",
+                    "referencia": reference_index,
+                    "pagina": page,
+                }
+            )
+        for page, image in enumerate(reference.target_images, start=1):
+            attachments.append(image)
+            manifest.append(
+                {
+                    "anexo": len(attachments),
+                    "conteudo": "croqui_oficial_referencia",
+                    "referencia": reference_index,
+                    "pagina": page,
+                }
+            )
+    return attachments, manifest
+
+
+def _codex_prompt(
+    extraction: LocalExtraction,
+    references: list[RetrievedReference],
+    attachment_manifest: list[dict],
+) -> str:
+    return "\n\n".join(
+        [
+            SYSTEM_PROMPT,
+            "Esta é uma execução privada e não interativa. Analise apenas os anexos e o contexto "
+            "fornecidos. Não pesquise na web, não altere arquivos e não tente obter dados externos.",
+            "Ordem e significado dos anexos:\n"
+            + json.dumps(attachment_manifest, ensure_ascii=False, separators=(",", ":")),
+            "Contexto técnico extraído do projeto:\n" + _technical_context(extraction, references),
+            "Devolva exclusivamente o objeto JSON que satisfaz o schema solicitado.",
+        ]
+    )
+
+
+def _strict_schema(value):
+    if isinstance(value, dict):
+        result = {key: _strict_schema(item) for key, item in value.items() if key != "default"}
+        if result.get("type") == "object" or "properties" in result:
+            properties = result.get("properties", {})
+            result["additionalProperties"] = False
+            result["required"] = list(properties)
+        return result
+    if isinstance(value, list):
+        return [_strict_schema(item) for item in value]
+    return value
+
+
+def _raise_codex_failure(completed: subprocess.CompletedProcess) -> None:
+    diagnostic = f"{completed.stderr}\n{completed.stdout}".lower()
+    if any(
+        marker in diagnostic
+        for marker in (
+            "not logged in",
+            "login required",
+            "please run codex login",
+            "authentication required",
+            "unauthorized",
+        )
+    ):
+        raise AIConfigurationError(
+            "Analisador local ainda não autenticado com a conta ChatGPT."
+        )
+    if any(
+        marker in diagnostic
+        for marker in ("usage limit", "rate limit", "too many requests", "quota")
+    ):
+        raise AIAnalysisError("Limite temporário de uso do plano ChatGPT atingido.")
+    raise AIAnalysisError(f"Analisador local encerrou com código {completed.returncode}.")

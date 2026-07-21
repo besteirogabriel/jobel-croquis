@@ -69,6 +69,15 @@ function setDownloads(data) {
   root.className = root.children.length ? "downloads" : "downloads hidden";
 }
 
+async function responseError(response) {
+  try {
+    const data = await response.json();
+    return data.detail || "Não foi possível concluir o processamento";
+  } catch {
+    return "Não foi possível concluir o processamento";
+  }
+}
+
 fetch("/api/health")
   .then((response) => response.json())
   .then(() => {
@@ -82,7 +91,7 @@ $("#upload").onsubmit = async (event) => {
   button.textContent = "Analisando…";
   try {
     const response = await fetch("/api/analisar", { method: "POST", body: new FormData(event.target) });
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new Error(await responseError(response));
     const data = await response.json();
     job = data.job_id;
     setFacts(data);
@@ -103,7 +112,7 @@ $("#upload").onsubmit = async (event) => {
 $("#confirm").onsubmit = async (event) => {
   event.preventDefault();
   const response = await fetch("/api/confirmar", { method: "POST", body: new FormData(event.target) });
-  if (!response.ok) return alert(await response.text());
+  if (!response.ok) return alert(await responseError(response));
   const data = await response.json();
   setStatus(data);
   setDownloads(data);

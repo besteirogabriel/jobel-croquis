@@ -42,25 +42,40 @@ O usuário envia **somente o projeto elétrico em PDF**. O modelo oficial saniti
 
 O logo RGE já existente na aba de croqui é preservado sem reconstrução. O asset interno não contém diagrama, identificadores ou dados de uma obra usada como referência.
 
-## Executar com Docker
+## Executar o MVP com ChatGPT Pro
 
 ```bash
 cp .env.example .env
-docker compose up --build
+docker compose build
+docker compose run --rm codex-login
+docker compose up
 ```
+
+A etapa `codex-login` mostra um código e um endereço para autenticar o Codex com a conta ChatGPT. A
+credencial fica no volume privado `codex_auth`, fora da imagem, do repositório, do `.env` e do
+navegador. O login precisa ser feito somente na primeira instalação ou depois de uma revogação.
 
 Acesse <http://localhost:8080>. A documentação da API fica desabilitada por padrão; em desenvolvimento, use `EXPOSE_API_DOCS=true` para habilitar `/api/docs`.
 
-Preencha a chave somente no `.env` do backend:
+O modo padrão do MVP usa os limites do Codex incluídos no plano ChatGPT e não exige saldo da API:
 
 ```dotenv
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-5.6-sol
+AI_PROVIDER=codex
+CODEX_MODEL=gpt-5.6-sol
 AI_ENABLED=true
 AI_REQUIRED=true
 ```
 
-A chave não é enviada ao navegador, não aparece nas respostas e não é gravada nos relatórios.
+Para confirmar a autenticação sem expor credenciais:
+
+```bash
+docker compose exec jobel-croquis codex login status
+```
+
+Em produção, troque para `AI_PROVIDER=openai` e configure `OPENAI_API_KEY`. A chave não é enviada ao
+navegador, não aparece nas respostas e não é gravada nos relatórios. O analisador Codex também remove
+chaves de API do próprio processo antes de executar, garantindo que o modo `codex` consuma a
+autenticação ChatGPT salva.
 
 ## Corpus oficial
 

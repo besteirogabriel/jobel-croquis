@@ -2,6 +2,10 @@
 
 Toda a operação acontece no backend do próprio projeto. O chat não é dependência do runtime.
 
+O processamento normal do MVP pode usar `AI_PROVIDER=codex`, autenticado com a conta ChatGPT pelo
+serviço `codex-login`. Rotulagem em lote e fine-tuning continuam sendo operações da API e, portanto,
+exigem `OPENAI_API_KEY` quando forem executados.
+
 ## 1. Preparar o corpus
 
 Coloque os pares em `CROQUI IA/<caso>/`. Cada caso deve conter um projeto PDF, o croqui oficial PDF e
@@ -70,7 +74,8 @@ confirmar isso.
 
 ## 5. Regras de segurança
 
-- `OPENAI_API_KEY` existe somente no `.env` do servidor.
+- a autenticação do MVP fica somente no volume Docker `codex_auth`;
+- `OPENAI_API_KEY`, quando usada para treinamento ou produção, existe somente no `.env` do servidor;
 - `CROQUI IA/`, imagens de referência, rótulos e datasets não entram no Git.
 - o frontend não recebe estado de IA, modelo, tokens, IDs ou caminhos internos;
 - os símbolos nunca são gerados pela IA: são clonados do Excel oficial;

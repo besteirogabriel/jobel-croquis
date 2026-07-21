@@ -101,7 +101,10 @@ def _run_engine(job_id: str, folder: Path):
         raise HTTPException(422, str(exc)) from exc
     except HTTPException:
         raise
-    except (AIConfigurationError, AIAnalysisError) as exc:
+    except AIConfigurationError as exc:
+        logger.exception("Configuração da análise backend incompleta para o job %s", job_id)
+        raise HTTPException(503, "Análise automática ainda não autenticada no servidor") from exc
+    except AIAnalysisError as exc:
         logger.exception("Falha na análise técnica backend do job %s", job_id)
         raise HTTPException(503, "Análise técnica temporariamente indisponível") from exc
     except Exception as exc:

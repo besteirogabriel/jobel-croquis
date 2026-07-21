@@ -4,8 +4,11 @@ services:
     ports:
       - "8080:8080"
     env_file: .env
+    environment:
+      CODEX_HOME: /var/lib/codex
     volumes:
       - jobel_data:/data
+      - codex_auth:/var/lib/codex
       - ./CROQUI IA:/app/CROQUI IA:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health')"]
@@ -14,5 +17,21 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+  codex-login:
+    build: .
+    profiles: ["setup"]
+    environment:
+      CODEX_HOME: /var/lib/codex
+    volumes:
+      - codex_auth:/var/lib/codex
+    entrypoint:
+      - codex
+      - --config
+      - 'cli_auth_credentials_store="file"'
+      - login
+      - --device-auth
+    stdin_open: true
+    tty: true
 volumes:
   jobel_data:
+  codex_auth:

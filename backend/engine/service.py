@@ -4,7 +4,13 @@ import json
 import shutil
 from pathlib import Path
 
-from .ai_fallback import AIAnalysisError, AIConfigurationError, OpenAIPlanFallback, PlanFallback
+from .ai_fallback import (
+    AIAnalysisError,
+    AIConfigurationError,
+    CodexPlanFallback,
+    OpenAIPlanFallback,
+    PlanFallback,
+)
 from .decision import decide_local
 from .excel_native import build_native_workbook, inspect_template
 from .extraction import extract_project
@@ -26,12 +32,24 @@ class CroquiEngine:
         self.settings = settings
         if fallback is not None:
             self.fallback = fallback
-        elif settings.ai_enabled and settings.openai_api_key:
-            self.fallback = OpenAIPlanFallback(
-                api_key=settings.openai_api_key,
-                model=getattr(settings, "analysis_model", settings.openai_model),
-                timeout=settings.openai_timeout_seconds,
-            )
+        elif settings.ai_enabled:
+            provider = getattr(settings, "ai_provider", "openai").strip().lower()
+            if provider == "codex":
+                self.fallback = CodexPlanFallback(
+                    binary=getattr(settings, "codex_bin", "codex"),
+                    model=getattr(settings, "codex_model", "gpt-5.6-sol"),
+                    reasoning_effort=getattr(settings, "codex_reasoning_effort", "high"),
+                    timeout=getattr(settings, "codex_timeout_seconds", 600.0),
+                    max_project_pages=getattr(settings, "codex_max_project_pages", 6),
+                )
+            elif provider == "openai" and settings.openai_api_key:
+                self.fallback = OpenAIPlanFallback(
+                    api_key=settings.openai_api_key,
+                    model=getattr(settings, "analysis_model", settings.openai_model),
+                    timeout=settings.openai_timeout_seconds,
+                )
+            else:
+                self.fallback = None
         else:
             self.fallback = None
 
