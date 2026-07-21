@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import perf_counter
 
 import fitz
 
@@ -33,6 +34,7 @@ def retrieve_reference_cases(
     extraction: LocalExtraction,
     *,
     limit: int | None = None,
+    telemetry=None,
 ) -> list[RetrievedReference]:
     if not settings.corpus_references_enabled:
         return []
@@ -63,6 +65,7 @@ def retrieve_reference_cases(
     candidates.sort(key=lambda value: (-value[0], value[1].case_id))
     result: list[RetrievedReference] = []
     maximum = max(0, limit if limit is not None else settings.corpus_reference_limit)
+    render_started = perf_counter()
     for score, case in candidates[:maximum]:
         project = Path(case.project_pdf)
         target = Path(case.target_croqui_pdf or "")
@@ -78,6 +81,8 @@ def retrieve_reference_cases(
                 target_images=render_pdf_images(case.case_id, "croqui", target),
             )
         )
+    if telemetry is not None:
+        telemetry("renderizacao_referencias", perf_counter() - render_started)
     return result
 
 

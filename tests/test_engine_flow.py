@@ -123,6 +123,15 @@ def test_hallucinated_fallback_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_
     assert any(issue.code == "MAIN_EQUIPMENT_NOT_IN_PROJECT" for issue in result.validation.issues)
 
 
+def test_accepted_local_plan_survives_invalid_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    fallback = Fallback(fallback_plan(number="9999999"))
+    result = run_with(monkeypatch, tmp_path, extraction(score=0.95), fallback)
+    assert fallback.calls == 1
+    assert result.validation.accepted is True
+    assert result.plan.source == "local"
+    assert result.plan.main_equipment.number == "900001"
+
+
 def test_poles_follow_dominant_network_vertices():
     segments = [
         Segment(start=Point(x=0.1, y=0.4), end=Point(x=0.4, y=0.4), style="secondary"),

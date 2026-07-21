@@ -6,6 +6,7 @@ import re
 import shutil
 import uuid
 from pathlib import Path
+from time import perf_counter
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -46,6 +47,7 @@ async def _save_upload(upload: UploadFile, destination: Path, allowed: set[str])
     maximum = settings.max_upload_mb * 1024 * 1024
     total = 0
     destination.parent.mkdir(parents=True, exist_ok=True)
+    started = perf_counter()
     try:
         with destination.open("wb") as output:
             while chunk := await upload.read(1024 * 1024):
@@ -59,6 +61,12 @@ async def _save_upload(upload: UploadFile, destination: Path, allowed: set[str])
     if total == 0:
         destination.unlink(missing_ok=True)
         raise HTTPException(400, "Arquivo vazio")
+    logger.info(
+        "upload do job %s gravado em %.3fs (%d bytes)",
+        destination.parent.name,
+        perf_counter() - started,
+        total,
+    )
     return destination
 
 

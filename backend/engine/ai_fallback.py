@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from time import perf_counter
 from typing import Protocol
 
 from openai import OpenAI
@@ -115,22 +116,31 @@ class CodexPlanFallback:
         self.timeout = timeout
         self.max_project_pages = max(1, max_project_pages)
 
-    def propose(self, pdf_path: Path, extraction: LocalExtraction) -> CroquiPlan | None:
+    def propose(self, pdf_path: Path, extraction: LocalExtraction, telemetry=None) -> CroquiPlan | None:
         executable = shutil.which(self.binary)
         if executable is None:
             raise AIConfigurationError("Executável do analisador local não encontrado.")
 
-        references = retrieve_reference_cases(pdf_path, extraction)
+        started = perf_counter()
+        references = retrieve_reference_cases(pdf_path, extraction, telemetry=telemetry)
+        if telemetry is not None:
+            telemetry("carga_selecao_corpus", perf_counter() - started)
+        started = perf_counter()
         project_images = render_pdf_images(
             f"runtime-{pdf_path.parent.name}",
             f"current-project-p{self.max_project_pages}",
             pdf_path,
             max_pages=self.max_project_pages,
         )
+        if telemetry is not None:
+            telemetry("renderizacao_projeto", perf_counter() - started)
         if not project_images:
             raise AIAnalysisError("O projeto não pôde ser renderizado para análise visual.")
 
+        started = perf_counter()
         attachments, attachment_manifest = _codex_attachments(project_images, references)
+        if telemetry is not None:
+            telemetry("preparacao_anexos", perf_counter() - started)
         internal_dir = pdf_path.parent / ".analysis"
         internal_dir.mkdir(parents=True, exist_ok=True)
         schema_path = internal_dir / "croqui-plan.schema.json"
@@ -189,6 +199,7 @@ class CodexPlanFallback:
         for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"):
             environment.pop(key, None)
         try:
+            started = perf_counter()
             completed = subprocess.run(
                 command,
                 input=_codex_prompt(extraction, references, attachment_manifest),
@@ -198,7 +209,11 @@ class CodexPlanFallback:
                 env=environment,
                 check=False,
             )
+            if telemetry is not None:
+                telemetry("subprocesso_analise_total", perf_counter() - started)
         except subprocess.TimeoutExpired as exc:
+            if telemetry is not None:
+                telemetry("subprocesso_analise_total", self.timeout)
             raise AIAnalysisError("A análise local excedeu o tempo limite configurado.") from exc
         except OSError as exc:
             raise AIConfigurationError("Não foi possível iniciar o analisador local.") from exc

@@ -6,6 +6,7 @@ import subprocess
 import unicodedata
 from collections import defaultdict
 from pathlib import Path
+from time import perf_counter
 
 import fitz
 
@@ -358,6 +359,7 @@ def _targeted_ocr(
     tesseract_bin: str,
     language: str,
     dpi: int,
+    telemetry=None,
 ) -> str:
     """Lê em alta resolução a tabela de manobras no rodapé.
 
@@ -366,7 +368,8 @@ def _targeted_ocr(
     """
 
     texts: list[str] = []
-    for page in list(doc)[:2]:
+    for page_number, page in enumerate(list(doc)[:2], start=1):
+        started = perf_counter()
         rect = page.rect
         broad = page.get_pixmap(
             dpi=dpi,
@@ -406,6 +409,8 @@ def _targeted_ocr(
             )
             if text
         )
+        if telemetry is not None:
+            telemetry(f"ocr_pagina_{page_number}", perf_counter() - started)
     return "\n".join(texts)
 
 
@@ -416,21 +421,29 @@ def extract_project(
     tesseract_bin: str = "tesseract",
     ocr_language: str = "por+eng",
     ocr_dpi: int = 600,
+    telemetry=None,
 ) -> LocalExtraction:
     with fitz.open(pdf_path) as doc:
+        started = perf_counter()
         text = "\n".join(page.get_text("text", sort=True) for page in doc)
+        if telemetry is not None:
+            telemetry("extracao_pdf_nativa", perf_counter() - started)
         if ocr_enabled:
-            text = f"{text}\n{_targeted_ocr(doc, tesseract_bin=tesseract_bin, language=ocr_language, dpi=ocr_dpi)}"
+            text = f"{text}\n{_targeted_ocr(doc, tesseract_bin=tesseract_bin, language=ocr_language, dpi=ocr_dpi, telemetry=telemetry)}"
+        started = perf_counter()
         normalized = normalize(text)
         metadata = _extract_metadata(doc, text)
         actions = _extract_actions(text)
         candidates = _apply_action_evidence(doc, text, _extract_candidates(doc, text), actions)
         identifiers = sorted(set(_NUMBER_RE.findall(normalized)))
+        segments = _extract_segments(doc)
+        if telemetry is not None:
+            telemetry("analise_local_pdf", perf_counter() - started)
         return LocalExtraction(
             metadata=metadata,
             text=text,
             identifiers=identifiers,
             actions=actions,
             candidates=candidates,
-            segments=_extract_segments(doc),
+            segments=segments,
         )
