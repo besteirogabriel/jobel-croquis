@@ -67,6 +67,14 @@ function setDownloads(data) {
     root.append(link);
   }
   root.className = root.children.length ? "downloads" : "downloads hidden";
+  const preview = $("#preview");
+  if (available.preview) {
+    preview.src = `/api/jobs/${job}/download/preview`;
+    preview.classList.remove("hidden");
+  } else {
+    preview.removeAttribute("src");
+    preview.classList.add("hidden");
+  }
 }
 
 async function responseError(response) {

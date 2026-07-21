@@ -14,6 +14,7 @@ from backend.engine.models import (
     Point,
     ProjectMetadata,
     Segment,
+    SymbolPlacement,
 )
 from backend.engine.service import CroquiEngine
 
@@ -134,6 +135,20 @@ def test_fallback_main_equipment_is_normalized_into_export_list(
     assert result.plan.equipment[0].main is True
 
 
+def test_scene_normalization_removes_composites_and_adds_missing_vertices():
+    plan = fallback_plan()
+    plan.symbols = [
+        SymbolPlacement(symbol_type="PASSAGE_PRIMARY", position=Point(x=0.3, y=0.5)),
+        SymbolPlacement(symbol_type="GROUND_AT", position=Point(x=0.6, y=0.5)),
+    ]
+    plan.poles = []
+
+    CroquiEngine._normalize_scene_primitives(plan, extraction())
+
+    assert [str(item.symbol_type) for item in plan.symbols] == ["GROUND_AT"]
+    assert [(point.x, point.y) for point in plan.poles] == [(0.2, 0.5), (0.8, 0.5)]
+
+
 def test_weak_local_result_calls_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     fallback = Fallback(fallback_plan())
     result = run_with(monkeypatch, tmp_path, extraction(score=0.84), fallback)
@@ -150,6 +165,37 @@ def test_hallucinated_fallback_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_
     assert result.validation.accepted is False
     assert result.plan.source == "openai_fallback"
     assert any(issue.code == "MAIN_EQUIPMENT_NOT_IN_PROJECT" for issue in result.validation.issues)
+
+
+def test_manual_confirmation_preserves_analyzed_scene(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    local = extraction(score=0.55)
+    analyzed = fallback_plan()
+    analyzed.symbols = [
+        SymbolPlacement(symbol_type="GROUND_AT", position=Point(x=0.6, y=0.55))
+    ]
+    analyzed.poles = [Point(x=0.2, y=0.5), Point(x=0.8, y=0.5)]
+    fallback = Fallback(analyzed)
+    run_with(monkeypatch, tmp_path, local, fallback)
+
+    engine = CroquiEngine(settings(), fallback=fallback)
+    monkeypatch.setattr(engine, "_extract", lambda *_: local)
+    monkeypatch.setattr(engine, "_export", lambda *_: None)
+    result = engine.override(
+        job_id="0123456789ab",
+        project=tmp_path / "project.pdf",
+        template=Path("backend/assets/modelo_croqui_oficial.xlsx"),
+        job_dir=tmp_path,
+        equipment_type="FU",
+        number="900002",
+    )
+
+    assert result.plan.main_equipment.number == "900002"
+    assert result.plan.segments == analyzed.segments
+    assert result.plan.symbols == analyzed.symbols
+    assert result.plan.poles == analyzed.poles
+    assert len(result.plan.work_zones) == 1
 
 
 def test_invalid_fallback_does_not_publish_accepted_local_geometry(

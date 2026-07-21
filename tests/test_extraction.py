@@ -32,7 +32,7 @@ def test_title_block_metadata_uses_pdf_structure(tmp_path: Path):
     assert extraction.metadata.levantador == "Tecnico Exemplo"
 
 
-def test_maneuver_table_is_deduplicated_and_prioritized():
+def test_maneuver_table_is_deduplicated_without_becoming_the_isolation_answer():
     text = "Abrir | Transformador | 900001\nAbrir Transformador 900001"
     actions = _extract_actions(text)
     assert actions == [
@@ -51,7 +51,8 @@ def test_maneuver_table_is_deduplicated_and_prioritized():
     ]
     ranked = _apply_action_evidence(document, text, candidates, actions)
     assert ranked[0].number == "900001"
-    assert ranked[0].score == 0.99
+    assert ranked[0].score == 0.82
+    assert "não é conclusão de isolamento" in " ".join(ranked[0].evidence)
 
 
 def test_transformer_being_replaced_is_not_assumed_to_be_isolation():

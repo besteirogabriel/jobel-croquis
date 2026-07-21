@@ -11,8 +11,8 @@ from typing import Protocol
 
 from openai import OpenAI
 
-from backend.config import settings
-from backend.training.assets import image_data_url, render_pdf_images
+from backend.config import BACKEND_DIR, settings
+from backend.training.assets import image_data_url, render_identifier_crops, render_pdf_images
 from backend.training.retrieval import RetrievedReference, retrieve_reference_cases
 
 from .models import CroquiPlan, LocalExtraction
@@ -25,7 +25,7 @@ Regras obrigatórias:
    equipamento da tabela de manobras.
 2. Nunca invente identificadores; use apenas números visíveis no projeto ou confirmados no cadastro.
 3. Preserve a topologia elétrica útil: montante, jusante, derivações, postes, equipamentos e redes.
-4. Tipos permitidos: TR, FU, FC, RL, RG, OL e SC.
+4. Equipamentos numerados permitidos: TR, FU, FC, RL, RG, OL e SC.
 5. Coordenadas são normalizadas entre 0 e 1 e devem compor um croqui legível, não reproduzir o carimbo.
 6. Segment.style: primary para rede primária tracejada, secondary para secundária contínua e projected
    para rede nova marrom.
@@ -34,6 +34,28 @@ Regras obrigatórias:
    que não exista no projeto atual.
 9. Não desenhe ou descreva ícones. O backend clona os objetos oficiais da aba Simbologia do Excel.
 10. Em incerteza, reduza confidence e registre a justificativa em rationale.
+11. Inspecione e inclua todos os símbolos técnicos visíveis. Use symbols para poste novo,
+    cruzamentos, passagens, mudanças de bitola, seccionamentos, transformador particular,
+    capacitor, fusíveis especiais, chaves faca, omni-rupter, aterramentos BT/AT e área oval.
+12. Não substitua símbolos por postes ou linhas. Cada posição em poles representa somente um
+    poste existente; cada equipamento e cada item de symbols deve corresponder a um objeto visível.
+13. Preserve todos os postes intermediários dos trechos representados; não reduza uma sequência de
+    postes a apenas suas extremidades. Conte visualmente círculos, círculos concêntricos e quadrados.
+14. Compare chaves com a legenda: fusível, faca com abertura em carga, faca sem abertura e versões
+    tripolares são classes distintas. FC usa por padrão a faca com abertura em carga; use
+    KNIFE_NO_LOAD_BREAK quando a planta mostrar explicitamente a variante sem abertura. Registre o
+    número legível em label e nunca troque chave por TR.
+15. Inclua cada aterramento AT ou BT do croqui operacional e cada área de trabalho tracejada. Não
+    use FUSE_NO_LOAD_BREAK para representar aterramento ou proteção genérica de transformador.
+16. O retângulo/oval de trabalho delimita a intervenção, não toda a rede. Em projetos com uma região
+    de intervenção inequivocamente indicada, work_zones não pode ficar vazio.
+17. Determine primeiro a região e o nível de tensão da intervenção e siga a rede em direção à fonte.
+    Trabalho restrito à rede secundária é normalmente nomeado pelo TR que a alimenta; trabalho no TR
+    ou na rede primária exige o dispositivo de isolamento imediatamente a montante. Uma manobra remota
+    ou auxiliar pode constar da tabela sem nomear o croqui.
+18. Use as referências para aprender essa convenção operacional, nunca para transferir identificadores.
+    Se o dispositivo a montante estiver fora da folha e não houver cadastro confirmado, não deduza seu
+    número: escolha baixa confidence e explique a ausência. Mantenha label curto e técnico.
 """
 
 
@@ -72,6 +94,15 @@ class OpenAIPlanFallback:
                 "file_data": f"data:application/pdf;base64,{encoded}",
             },
             {"type": "input_text", "text": _technical_context(extraction, references)},
+            {
+                "type": "input_text",
+                "text": "Legenda oficial de simbologia; use somente para reconhecer classes:",
+            },
+            {
+                "type": "input_image",
+                "image_url": image_data_url(_symbol_legend_path()),
+                "detail": "high",
+            },
         ]
         content.extend(_reference_content(references))
         request: dict = {
@@ -131,6 +162,16 @@ class CodexPlanFallback:
             f"current-project-p{self.max_project_pages}",
             pdf_path,
             max_pages=self.max_project_pages,
+            first_page_detail_tiles=settings.codex_project_detail_tiles,
+        )
+        project_images.extend(
+            render_identifier_crops(
+                f"runtime-{pdf_path.parent.name}",
+                f"current-project-p{self.max_project_pages}",
+                pdf_path,
+                [item.number for item in extraction.candidates],
+                limit=settings.codex_identifier_crop_limit,
+            )
         )
         if telemetry is not None:
             telemetry("renderizacao_projeto", perf_counter() - started)
@@ -281,11 +322,17 @@ def _codex_attachments(
 ) -> tuple[list[Path], list[dict]]:
     attachments: list[Path] = []
     manifest: list[dict] = []
-    for page, image in enumerate(project_images, start=1):
+    for image in project_images:
         attachments.append(image)
         manifest.append(
-            {"anexo": len(attachments), "conteudo": "projeto_atual", "pagina": page}
+            {
+                "anexo": len(attachments),
+                "conteudo": "projeto_atual",
+                "vista": image.stem,
+            }
         )
+    attachments.append(_symbol_legend_path())
+    manifest.append({"anexo": len(attachments), "conteudo": "legenda_simbologia_oficial"})
     for reference_index, reference in enumerate(references, start=1):
         for page, image in enumerate(reference.project_images, start=1):
             attachments.append(image)
@@ -310,6 +357,13 @@ def _codex_attachments(
     return attachments, manifest
 
 
+def _symbol_legend_path() -> Path:
+    path = BACKEND_DIR / "assets" / "simbologia_oficial.png"
+    if not path.is_file():
+        raise AIConfigurationError("Legenda de simbologia oficial não encontrada.")
+    return path
+
+
 def _codex_prompt(
     extraction: LocalExtraction,
     references: list[RetrievedReference],
@@ -320,6 +374,11 @@ def _codex_prompt(
             SYSTEM_PROMPT,
             "Esta é uma execução privada e não interativa. Analise apenas os anexos e o contexto "
             "fornecidos. Não pesquise na web, não altere arquivos e não tente obter dados externos.",
+            "As vistas com 'tile' são ampliações sobrepostas da primeira página do projeto atual. "
+            "Use-as para ler números e distinguir símbolos; use a vista geral para coordenadas e "
+            "topologia. Vistas com 'focus_NUMERO' mostram o entorno ampliado daquele identificador; "
+            "use o símbolo visível nelas para corrigir tipos locais inferidos apenas por proximidade "
+            "de texto ou kVA. Não conte o mesmo objeto novamente quando aparecer em dois recortes.",
             "Ordem e significado dos anexos:\n"
             + json.dumps(attachment_manifest, ensure_ascii=False, separators=(",", ":")),
             "Contexto técnico extraído do projeto:\n" + _technical_context(extraction, references),

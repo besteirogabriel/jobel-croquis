@@ -16,6 +16,31 @@ class EquipmentType(StrEnum):
     SC = "SC"
 
 
+class SymbolType(StrEnum):
+    POLE_NEW = "POLE_NEW"
+    CROSS_CONNECTED = "CROSS_CONNECTED"
+    CROSS_DISCONNECTED = "CROSS_DISCONNECTED"
+    PASSAGE_PRIMARY = "PASSAGE_PRIMARY"
+    PASSAGE_SECONDARY = "PASSAGE_SECONDARY"
+    PASSAGE_DUAL = "PASSAGE_DUAL"
+    PRIMARY_GAUGE_CHANGE = "PRIMARY_GAUGE_CHANGE"
+    SECONDARY_GAUGE_CHANGE = "SECONDARY_GAUGE_CHANGE"
+    SECTION_PRIMARY = "SECTION_PRIMARY"
+    SECTION_SECONDARY = "SECTION_SECONDARY"
+    TR_PRIVATE = "TR_PRIVATE"
+    CAPACITOR = "CAPACITOR"
+    FUSE_REPEATER = "FUSE_REPEATER"
+    FUSE_NO_LOAD_BREAK = "FUSE_NO_LOAD_BREAK"
+    KNIFE_NO_LOAD_BREAK = "KNIFE_NO_LOAD_BREAK"
+    KNIFE_LOAD_BREAK = "KNIFE_LOAD_BREAK"
+    KNIFE_TRIPOLAR_NO_LOAD_BREAK = "KNIFE_TRIPOLAR_NO_LOAD_BREAK"
+    KNIFE_TRIPOLAR_LOAD_BREAK = "KNIFE_TRIPOLAR_LOAD_BREAK"
+    OMNI_RUPTER = "OMNI_RUPTER"
+    GROUND_BT = "GROUND_BT"
+    GROUND_AT = "GROUND_AT"
+    WORK_ZONE_OVAL = "WORK_ZONE_OVAL"
+
+
 class Point(BaseModel):
     x: float = Field(ge=0, le=1)
     y: float = Field(ge=0, le=1)
@@ -41,6 +66,12 @@ class EquipmentPlacement(BaseModel):
     position: Point
     label: str = ""
     main: bool = False
+
+
+class SymbolPlacement(BaseModel):
+    symbol_type: SymbolType
+    position: Point
+    label: str = ""
 
 
 class WorkZone(BaseModel):
@@ -83,6 +114,7 @@ class LocalExtraction(BaseModel):
 class CroquiPlan(BaseModel):
     main_equipment: EquipmentPlacement | None = None
     equipment: list[EquipmentPlacement] = Field(default_factory=list)
+    symbols: list[SymbolPlacement] = Field(default_factory=list)
     poles: list[Point] = Field(default_factory=list)
     segments: list[Segment] = Field(default_factory=list)
     work_zones: list[WorkZone] = Field(default_factory=list)

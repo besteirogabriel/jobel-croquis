@@ -77,6 +77,9 @@ def test_codex_provider_uses_chatgpt_auth_and_structured_output(
         "backend.engine.ai_fallback.render_pdf_images", lambda *_, **__: [image]
     )
     monkeypatch.setattr(
+        "backend.engine.ai_fallback.render_identifier_crops", lambda *_, **__: []
+    )
+    monkeypatch.setattr(
         "backend.engine.ai_fallback.retrieve_reference_cases", lambda *_, **__: []
     )
 
@@ -112,6 +115,9 @@ def test_codex_provider_reports_missing_login(monkeypatch: pytest.MonkeyPatch, t
     monkeypatch.setattr("backend.engine.ai_fallback.shutil.which", lambda _: "/usr/bin/codex")
     monkeypatch.setattr(
         "backend.engine.ai_fallback.render_pdf_images", lambda *_, **__: [image]
+    )
+    monkeypatch.setattr(
+        "backend.engine.ai_fallback.render_identifier_crops", lambda *_, **__: []
     )
     monkeypatch.setattr(
         "backend.engine.ai_fallback.retrieve_reference_cases", lambda *_, **__: []

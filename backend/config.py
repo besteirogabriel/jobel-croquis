@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     codex_reasoning_effort: str = "high"
     codex_timeout_seconds: float = 600.0
     codex_max_project_pages: int = 6
+    codex_project_detail_tiles: bool = True
+    codex_identifier_crop_limit: int = 8
     ai_enabled: bool = True
     ai_required: bool = True
     corpus_references_enabled: bool = True

@@ -10,6 +10,8 @@ from backend.engine.excel_native import (
     NS_A,
     NS_XDR,
     _clone_symbol,
+    _compact_equipment_label,
+    _compact_symbol_label,
     _offset_and_extent,
     _outer_xfrm,
     _q,
@@ -25,6 +27,7 @@ from backend.engine.models import (
     Point,
     ProjectMetadata,
     Segment,
+    SymbolPlacement,
     WorkZone,
 )
 
@@ -45,6 +48,7 @@ def test_native_symbols_are_cloned_from_official_sheet(tmp_path: Path):
     plan = CroquiPlan(
         main_equipment=main,
         equipment=[main],
+        symbols=[SymbolPlacement(symbol_type="GROUND_BT", position=Point(x=0.7, y=0.45))],
         poles=[Point(x=0.3, y=0.45)],
         segments=[
             Segment(start=Point(x=0.1, y=0.45), end=Point(x=0.45, y=0.45)),
@@ -61,6 +65,8 @@ def test_native_symbols_are_cloned_from_official_sheet(tmp_path: Path):
     assert 'name="Group 184"' in drawing
     assert 'name="Oval 148"' not in drawing
     assert 'name="Rectangle 334"' in drawing
+    assert 'name="Group 72"' in drawing
+    assert ">BT<" in drawing
     assert drawing.count('name="Line 430"') == 2
     assert "Jobel Label" in drawing
 
@@ -163,3 +169,52 @@ def test_pole_catalog_uses_concentric_official_symbol_instead_of_plain_oval():
         geometry.attrib.get("prst")
         for geometry in pole.findall(f".//{_q(NS_A, 'prstGeom')}")
     ] == ["ellipse", "ellipse"]
+
+
+def test_fc_uses_load_break_knife_and_keeps_no_load_variant_available(tmp_path: Path):
+    template = Path("backend/assets/modelo_croqui_oficial.xlsx")
+    main = EquipmentPlacement(
+        equipment_type="FC",
+        number="900001",
+        position=Point(x=0.45, y=0.45),
+        main=True,
+    )
+    plan = CroquiPlan(
+        main_equipment=main,
+        equipment=[main],
+        symbols=[
+            SymbolPlacement(
+                symbol_type="KNIFE_NO_LOAD_BREAK",
+                position=Point(x=0.65, y=0.45),
+            )
+        ],
+        segments=[
+            Segment(start=Point(x=0.2, y=0.45), end=Point(x=0.8, y=0.45))
+        ],
+        confidence=1,
+        source="manual",
+    )
+
+    output = build_native_workbook(template, tmp_path / "fc.xlsx", plan, ProjectMetadata())
+
+    with ZipFile(output) as archive:
+        drawing = archive.read("xl/drawings/drawing1.xml").decode("utf-8")
+    assert drawing.count('name="Group 319"') == 1
+    assert drawing.count('name="Group 302"') == 1
+
+
+def test_generated_labels_are_short_and_operational():
+    transformer = EquipmentPlacement(
+        equipment_type="TR",
+        number="900001",
+        position=Point(x=0.5, y=0.5),
+        label="Transformador 900001 - 112,5 kVA; dispositivo principal da intervenção",
+    )
+    grounding = SymbolPlacement(
+        symbol_type="GROUND_AT",
+        position=Point(x=0.5, y=0.5),
+        label="Aterramento temporário de alta tensão no poste",
+    )
+
+    assert _compact_equipment_label(transformer) == "TR 900001 - 112,5 kVA"
+    assert _compact_symbol_label(grounding) == "AT"

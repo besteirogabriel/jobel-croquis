@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import math
 import shutil
 from pathlib import Path
 from time import perf_counter
@@ -24,6 +25,7 @@ from .models import (
     EquipmentPlacement,
     EquipmentType,
     Point,
+    WorkZone,
 )
 from .office import render_preview, to_pdf, to_xls, to_xlsx
 from .registry import enrich_from_registry, load_registry
@@ -159,6 +161,7 @@ class CroquiEngine:
                     if proposal is None:
                         raise AIAnalysisError("Plano automático ausente.")
                     self._normalize_main_equipment(proposal)
+                    self._normalize_scene_primitives(proposal, extraction)
                     plan = proposal
                     with telemetry.measure("validacao"):
                         proposal_validation = validate_plan(
@@ -224,6 +227,47 @@ class CroquiEngine:
         plan.main_equipment = normalized_main
         plan.equipment = [normalized_main, *others]
 
+    @staticmethod
+    def _normalize_scene_primitives(plan: CroquiPlan, extraction) -> None:
+        composite_types = {
+            "CROSS_CONNECTED",
+            "CROSS_DISCONNECTED",
+            "PASSAGE_PRIMARY",
+            "PASSAGE_SECONDARY",
+            "PASSAGE_DUAL",
+            "PRIMARY_GAUGE_CHANGE",
+            "SECONDARY_GAUGE_CHANGE",
+        }
+        plan.symbols = [
+            item for item in plan.symbols if str(item.symbol_type) not in composite_types
+        ]
+
+        candidates = {
+            (str(item.equipment_type), item.number): item for item in extraction.candidates
+        }
+        filtered = []
+        for item in plan.equipment:
+            if item.main or str(item.equipment_type) != "TR":
+                filtered.append(item)
+                continue
+            candidate = candidates.get((str(item.equipment_type), item.number))
+            if candidate is None or "equipamento de referência" in " ".join(candidate.evidence):
+                continue
+            filtered.append(item)
+        plan.equipment = filtered
+
+        occupied = [item.position for item in plan.equipment]
+        occupied.extend(item.position for item in plan.symbols if str(item.symbol_type) == "POLE_NEW")
+        poles = list(plan.poles)
+        for segment in plan.segments:
+            for point in (segment.start, segment.end):
+                if any(math.hypot(point.x - other.x, point.y - other.y) < 0.06 for other in occupied):
+                    continue
+                if any(math.hypot(point.x - other.x, point.y - other.y) < 0.018 for other in poles):
+                    continue
+                poles.append(point)
+        plan.poles = poles
+
     def override(
         self,
         *,
@@ -254,6 +298,18 @@ class CroquiEngine:
                     threshold=self.settings.local_auto_threshold,
                     minimum_gap=self.settings.local_min_gap,
                 )
+            previous_report = job_dir / "relatorio.json"
+            if previous_report.is_file():
+                try:
+                    previous_data = json.loads(previous_report.read_text(encoding="utf-8"))
+                    previous_plan = CroquiPlan.model_validate(previous_data["plan"])
+                    if previous_plan.segments:
+                        base = previous_plan
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    logger.warning(
+                        "plano anterior do job %s não pôde ser reutilizado na confirmação",
+                        job_id,
+                    )
             selected_type = EquipmentType(equipment_type.upper())
             candidate = next(
                 (
@@ -265,9 +321,18 @@ class CroquiEngine:
                 ),
                 None,
             )
+            candidate = candidate or next(
+                (item for item in extraction.candidates if item.number == number),
+                None,
+            )
             position = candidate.position if candidate is not None else Point(x=0.5, y=0.48)
-            # As posições dos candidatos vêm do PDF; o plano local já está no canvas.
-            if base.main_equipment is not None and base.main_equipment.number == number:
+            visual_match = next(
+                (item for item in base.equipment if item.number == number),
+                None,
+            )
+            if visual_match is not None:
+                position = visual_match.position
+            elif base.main_equipment is not None and base.main_equipment.number == number:
                 position = base.main_equipment.position
             main = EquipmentPlacement(
                 equipment_type=selected_type,
@@ -276,18 +341,25 @@ class CroquiEngine:
                 label=f"{selected_type} {number}",
                 main=True,
             )
-            others = [item.model_copy(update={"main": False}) for item in base.equipment if item.number != number]
+            others = [
+                item.model_copy(update={"main": False})
+                for item in base.equipment
+                if not (item.number == number and item.equipment_type == selected_type)
+            ]
+            rationale = [*base.rationale, "equipamento principal confirmado pelo engenheiro"]
+            if observations:
+                rationale.append(observations)
+            work_zones = base.work_zones or [self._default_work_zone(position)]
             plan = CroquiPlan(
                 main_equipment=main,
                 equipment=[main, *others],
+                symbols=base.symbols,
                 poles=base.poles,
                 segments=base.segments,
-                work_zones=base.work_zones,
-                confidence=1,
+                work_zones=work_zones,
+                confidence=base.confidence,
                 source="manual",
-                rationale=["equipamento confirmado pelo engenheiro", observations]
-                if observations
-                else ["equipamento confirmado pelo engenheiro"],
+                rationale=rationale,
             )
             with telemetry.measure("validacao"):
                 validation = validate_plan(
@@ -309,6 +381,18 @@ class CroquiEngine:
             return result
         finally:
             telemetry.finish()
+
+    @staticmethod
+    def _default_work_zone(position: Point) -> WorkZone:
+        left = min(max(position.x - 0.09, 0.03), 0.78)
+        top = min(max(position.y - 0.10, 0.10), 0.70)
+        return WorkZone(
+            top_left=Point(x=left, y=top),
+            bottom_right=Point(
+                x=min(max(position.x + 0.09, left + 0.08), 0.97),
+                y=min(max(position.y + 0.10, top + 0.08), 0.88),
+            ),
+        )
 
     def _export(
         self,

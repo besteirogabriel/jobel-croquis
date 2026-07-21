@@ -29,7 +29,8 @@ O usuário envia **somente o projeto elétrico em PDF**. O modelo oficial saniti
 |---|---|
 | TR | `AutoShape 238` |
 | FU | `Group 729` |
-| FC | `Group 302` |
+| FC (com abertura em carga) | `Group 319` |
+| Faca sem abertura em carga | `Group 302` |
 | RL | `Text Box 245` |
 | RG | `Group 260` |
 | OL | `Text Box 261` |

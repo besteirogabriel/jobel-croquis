@@ -44,7 +44,12 @@ def retrieve_reference_cases(
         return []
     query_sha = sha256_file(pdf_path)
     query_tokens = _query_tokens(pdf_path, extraction)
-    query_types = {str(candidate.equipment_type) for candidate in extraction.candidates[:8]}
+    query_type_scores: dict[str, float] = {}
+    for candidate in extraction.candidates[:12]:
+        equipment_type = str(candidate.equipment_type)
+        query_type_scores[equipment_type] = max(
+            query_type_scores.get(equipment_type, 0.0), candidate.score
+        )
     query_format = _format(pdf_path.name)
     candidates: list[tuple[float, DatasetCase]] = []
     for case in manifest.cases:
@@ -55,8 +60,7 @@ def retrieve_reference_cases(
         tokens = set(case.project_tokens)
         union = query_tokens | tokens
         score = (len(query_tokens & tokens) / len(union) * 8.0) if union else 0.0
-        if case.equipment_type in query_types:
-            score += 5.0
+        score += query_type_scores.get(case.equipment_type, 0.0) * 2.0
         if query_format and case.project_format == query_format:
             score += 1.0
         if case.corpus_status == "COMPLETE":
@@ -66,7 +70,26 @@ def retrieve_reference_cases(
     result: list[RetrievedReference] = []
     maximum = max(0, limit if limit is not None else settings.corpus_reference_limit)
     render_started = perf_counter()
-    for score, case in candidates[:maximum]:
+    selected: list[tuple[float, DatasetCase]] = []
+    selected_ids: set[str] = set()
+    selected_types: set[str] = set()
+    for score, case in candidates:
+        if case.equipment_type in selected_types:
+            continue
+        selected.append((score, case))
+        selected_ids.add(case.case_id)
+        selected_types.add(case.equipment_type)
+        if len(selected) >= maximum:
+            break
+    for score, case in candidates:
+        if len(selected) >= maximum:
+            break
+        if case.case_id in selected_ids:
+            continue
+        selected.append((score, case))
+        selected_ids.add(case.case_id)
+
+    for score, case in selected:
         project = Path(case.project_pdf)
         target = Path(case.target_croqui_pdf or "")
         if not project.is_file() or not target.is_file():

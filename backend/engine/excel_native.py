@@ -33,7 +33,7 @@ for prefix, uri in (
 CANONICAL_SYMBOLS: dict[str, str] = {
     "TR": "AutoShape 238",
     "FU": "Group 729",
-    "FC": "Group 302",
+    "FC": "Group 319",
     "RL": "Text Box 245",
     "RG": "Group 260",
     "OL": "Text Box 261",
@@ -46,6 +46,28 @@ CANONICAL_SYMBOLS: dict[str, str] = {
     "LINE_SECONDARY": "Line 429",
     "LINE_PRIMARY": "Line 430",
     "LINE_PROJECTED": "Line 431",
+    "POLE_NEW": "Group 156",
+    "CROSS_CONNECTED": "Group 768",
+    "CROSS_DISCONNECTED": "Group 183",
+    "PASSAGE_PRIMARY": "Group 188",
+    "PASSAGE_SECONDARY": "Group 193",
+    "PASSAGE_DUAL": "Group 200",
+    "PRIMARY_GAUGE_CHANGE": "Group 792",
+    "SECONDARY_GAUGE_CHANGE": "Group 794",
+    "SECTION_PRIMARY": "Group 225",
+    "SECTION_SECONDARY": "Group 226",
+    "TR_PRIVATE": "AutoShape 243",
+    "CAPACITOR": "Group 254",
+    "FUSE_REPEATER": "Group 698",
+    "FUSE_NO_LOAD_BREAK": "Group 718",
+    "KNIFE_NO_LOAD_BREAK": "Group 302",
+    "KNIFE_LOAD_BREAK": "Group 319",
+    "KNIFE_TRIPOLAR_NO_LOAD_BREAK": "Group 321",
+    "KNIFE_TRIPOLAR_LOAD_BREAK": "Group 332",
+    "OMNI_RUPTER": "Group 764",
+    "GROUND_BT": "Group 72",
+    "GROUND_AT": "Group 80",
+    "WORK_ZONE_OVAL": "Oval 26855",
 }
 
 
@@ -393,6 +415,46 @@ def _xml_escape(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _compact_equipment_label(item) -> str:
+    base = f"{item.equipment_type} {item.number}"
+    if str(item.equipment_type) != "TR":
+        return base
+    power = re.search(r"\b\d+(?:[.,]\d+)?\s*KVA\b", item.label, re.IGNORECASE)
+    return f"{base} - {power.group(0)}" if power else base
+
+
+def _compact_symbol_label(item) -> str:
+    key = str(item.symbol_type)
+    if key == "GROUND_BT":
+        return "BT"
+    if key == "GROUND_AT":
+        return "AT"
+    label = " ".join(item.label.split())
+    if not label:
+        return ""
+    switch_types = {
+        "FUSE_REPEATER",
+        "FUSE_NO_LOAD_BREAK",
+        "KNIFE_NO_LOAD_BREAK",
+        "KNIFE_LOAD_BREAK",
+        "KNIFE_TRIPOLAR_NO_LOAD_BREAK",
+        "KNIFE_TRIPOLAR_LOAD_BREAK",
+        "OMNI_RUPTER",
+    }
+    if key in switch_types:
+        number = re.search(r"\b\d{5,8}\b", label)
+        return number.group(0) if number else label[:18]
+    return label if len(label) <= 24 else ""
+
+
+def _symbol_label_family(symbol_type: str) -> str:
+    if symbol_type.startswith("FUSE_"):
+        return "FU"
+    if symbol_type.startswith("KNIFE_") or symbol_type == "OMNI_RUPTER":
+        return "FC"
+    return symbol_type
+
+
 def _set_inline_cell(sheet: ET.Element, reference: str, value: str) -> None:
     match = re.fullmatch(r"([A-Z]+)(\d+)", reference)
     if not match:
@@ -617,9 +679,22 @@ def build_native_workbook(template: Path, output: Path, plan: CroquiPlan, metada
         for item in plan.equipment:
             anchor, next_id = _clone_symbol(catalog[str(item.equipment_type)], item.position, next_id)
             croqui_root.append(anchor)
-            label = item.label or f"{item.equipment_type} {item.number}"
+            label = _compact_equipment_label(item)
             anchor, next_id = _label_anchor(label, item.position, next_id, str(item.equipment_type))
             croqui_root.append(anchor)
+        for item in plan.symbols:
+            key = str(item.symbol_type)
+            anchor, next_id = _clone_symbol(catalog[key], item.position, next_id)
+            croqui_root.append(anchor)
+            label = _compact_symbol_label(item)
+            if label:
+                anchor, next_id = _label_anchor(
+                    label,
+                    item.position,
+                    next_id,
+                    _symbol_label_family(key),
+                )
+                croqui_root.append(anchor)
         for zone in plan.work_zones:
             anchor, next_id = _clone_zone(catalog["WORK_ZONE"], zone, next_id)
             croqui_root.append(anchor)
@@ -652,6 +727,10 @@ def validate_native_workbook(path: Path, plan: CroquiPlan) -> None:
         names = [_top_name(anchor) for anchor in list(root)]
         for item in plan.equipment:
             expected = CANONICAL_SYMBOLS[str(item.equipment_type)]
+            if expected not in names:
+                raise TemplateError(f"o símbolo oficial {expected} não foi clonado")
+        for item in plan.symbols:
+            expected = CANONICAL_SYMBOLS[str(item.symbol_type)]
             if expected not in names:
                 raise TemplateError(f"o símbolo oficial {expected} não foi clonado")
         line_names = {

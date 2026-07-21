@@ -274,8 +274,8 @@ def _apply_action_evidence(
             score = min(candidate.score if candidate is not None else 0.64, 0.64)
             evidence.add("equipamento da manobra é também alvo da obra; não define o isolamento")
         else:
-            score = max(candidate.score if candidate is not None else 0, 0.99)
-            evidence.add("equipamento identificado na tabela de manobras")
+            score = max(candidate.score if candidate is not None else 0, 0.82)
+            evidence.add("equipamento citado na tabela de manobras; não é conclusão de isolamento")
         by_key[key] = EquipmentCandidate(
             equipment_type=equipment_type,
             number=action.number,
@@ -435,14 +435,18 @@ def extract_project(
         metadata = _extract_metadata(doc, text)
         actions = _extract_actions(text)
         candidates = _apply_action_evidence(doc, text, _extract_candidates(doc, text), actions)
-        identifiers = sorted(set(_NUMBER_RE.findall(normalized)))
+        identifiers = set(_NUMBER_RE.findall(normalized))
+        # Candidatos também vêm da camada estruturada de palavras do PDF, que
+        # em alguns arquivos contém números ausentes do texto linearizado.
+        identifiers.update(candidate.number for candidate in candidates)
+        identifiers.update(action.number for action in actions)
         segments = _extract_segments(doc)
         if telemetry is not None:
             telemetry("analise_local_pdf", perf_counter() - started)
         return LocalExtraction(
             metadata=metadata,
             text=text,
-            identifiers=identifiers,
+            identifiers=sorted(identifiers),
             actions=actions,
             candidates=candidates,
             segments=segments,
