@@ -49,6 +49,8 @@ def settings() -> SimpleNamespace:
         local_auto_threshold=0.82,
         local_min_gap=0.12,
         libreoffice_bin="soffice",
+        local_fast_path_enabled=True,
+        local_fast_path_threshold=0.9,
     )
 
 
@@ -94,20 +96,27 @@ def run_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, local: LocalExtrac
     )
 
 
-def test_backend_analysis_runs_even_when_local_result_is_accepted(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_strong_local_result_skips_slow_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     fallback = Fallback(fallback_plan())
     result = run_with(monkeypatch, tmp_path, extraction(), fallback)
     assert result.validation.accepted is True
-    assert result.plan.source == "openai_fallback"
-    assert result.ai_used is True
-    assert fallback.calls == 1
+    assert result.plan.source == "local"
+    assert result.ai_used is False
+    assert fallback.calls == 0
 
 
 def test_blocked_local_result_calls_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     fallback = Fallback(fallback_plan())
     result = run_with(monkeypatch, tmp_path, extraction(score=0.55), fallback)
+    assert fallback.calls == 1
+    assert result.ai_used is True
+    assert result.validation.accepted is True
+    assert result.plan.source == "openai_fallback"
+
+
+def test_weak_local_result_calls_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    fallback = Fallback(fallback_plan())
+    result = run_with(monkeypatch, tmp_path, extraction(score=0.84), fallback)
     assert fallback.calls == 1
     assert result.ai_used is True
     assert result.validation.accepted is True
@@ -125,7 +134,17 @@ def test_hallucinated_fallback_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_
 
 def test_accepted_local_plan_survives_invalid_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     fallback = Fallback(fallback_plan(number="9999999"))
-    result = run_with(monkeypatch, tmp_path, extraction(score=0.95), fallback)
+    local_settings = settings()
+    local_settings.local_fast_path_enabled = False
+    monkeypatch.setattr("backend.engine.service.extract_project", lambda _, **__: extraction(score=0.95))
+    engine = CroquiEngine(local_settings, fallback=fallback)
+    monkeypatch.setattr(engine, "_export", lambda *_: None)
+    result = engine.run(
+        job_id="0123456789ab",
+        project=tmp_path / "project.pdf",
+        template=Path("backend/assets/modelo_croqui_oficial.xlsx"),
+        job_dir=tmp_path,
+    )
     assert fallback.calls == 1
     assert result.validation.accepted is True
     assert result.plan.source == "local"

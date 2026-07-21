@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     fine_tuning_max_project_pages: int = 4
     local_auto_threshold: float = 0.82
     local_min_gap: float = 0.12
+    local_fast_path_enabled: bool = True
+    local_fast_path_threshold: float = 0.9
     max_upload_mb: int = 50
     expose_api_docs: bool = False
     data_dir: Path = Path("/data")

@@ -139,6 +139,19 @@ class CroquiEngine:
             plan = local_plan
             validation = local_validation
             ai_used = False
+            if self._can_use_local_fast_path(local_plan, local_validation):
+                telemetry.record("analise_complementar_pulada", 0.0)
+                result = EngineResult(
+                    job_id=job_id,
+                    status="READY_TO_GENERATE",
+                    extraction=extraction,
+                    plan=plan,
+                    validation=validation,
+                    ai_used=ai_used,
+                )
+                self._export(result, template, job_dir, telemetry)
+                self._write_report(result, job_dir)
+                return result
             if self.fallback is not None:
                 try:
                     proposal = self._propose(project, extraction, telemetry)
@@ -187,6 +200,14 @@ class CroquiEngine:
             return self.fallback.propose(project, extraction, telemetry=telemetry.record)
         with telemetry.measure("subprocesso_analise_total"):
             return self.fallback.propose(project, extraction)
+
+    def _can_use_local_fast_path(self, plan: CroquiPlan, validation) -> bool:
+        if not getattr(self.settings, "local_fast_path_enabled", True):
+            return False
+        if not validation.accepted or plan.main_equipment is None:
+            return False
+        threshold = getattr(self.settings, "local_fast_path_threshold", 0.9)
+        return plan.confidence >= threshold
 
     def override(
         self,
