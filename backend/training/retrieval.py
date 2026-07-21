@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import fitz
+
+from backend.config import settings
+from backend.corpus.discovery import sha256_file
+from backend.engine.models import LocalExtraction
+
+from .assets import render_pdf_images
+from .dataset import load_or_build_manifest
+from .models import DatasetCase
+
+TOKEN_RE = re.compile(r"[A-ZÀ-Ü0-9]{3,}")
+FORMAT_RE = re.compile(r"\bA([1-4])\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class RetrievedReference:
+    case_id: str
+    score: float
+    equipment_type: str
+    equipment_code: str
+    project_images: list[Path] = field(default_factory=list)
+    target_images: list[Path] = field(default_factory=list)
+
+
+def retrieve_reference_cases(
+    pdf_path: Path,
+    extraction: LocalExtraction,
+    *,
+    limit: int | None = None,
+) -> list[RetrievedReference]:
+    if not settings.corpus_references_enabled:
+        return []
+    try:
+        manifest = load_or_build_manifest()
+    except (FileNotFoundError, OSError, ValueError):
+        return []
+    query_sha = sha256_file(pdf_path)
+    query_tokens = _query_tokens(pdf_path, extraction)
+    query_types = {str(candidate.equipment_type) for candidate in extraction.candidates[:8]}
+    query_format = _format(pdf_path.name)
+    candidates: list[tuple[float, DatasetCase]] = []
+    for case in manifest.cases:
+        if case.split not in settings.allowed_reference_splits:
+            continue
+        if case.project_sha256 == query_sha or not case.target_croqui_pdf:
+            continue
+        tokens = set(case.project_tokens)
+        union = query_tokens | tokens
+        score = (len(query_tokens & tokens) / len(union) * 8.0) if union else 0.0
+        if case.equipment_type in query_types:
+            score += 5.0
+        if query_format and case.project_format == query_format:
+            score += 1.0
+        if case.corpus_status == "COMPLETE":
+            score += 0.2
+        candidates.append((score, case))
+    candidates.sort(key=lambda value: (-value[0], value[1].case_id))
+    result: list[RetrievedReference] = []
+    maximum = max(0, limit if limit is not None else settings.corpus_reference_limit)
+    for score, case in candidates[:maximum]:
+        project = Path(case.project_pdf)
+        target = Path(case.target_croqui_pdf or "")
+        if not project.is_file() or not target.is_file():
+            continue
+        result.append(
+            RetrievedReference(
+                case_id=case.case_id,
+                score=round(score, 6),
+                equipment_type=case.equipment_type,
+                equipment_code=case.equipment_code,
+                project_images=render_pdf_images(case.case_id, "project", project),
+                target_images=render_pdf_images(case.case_id, "croqui", target),
+            )
+        )
+    return result
+
+
+def _query_tokens(pdf_path: Path, extraction: LocalExtraction) -> set[str]:
+    values = [pdf_path.stem, extraction.metadata.municipio, extraction.text]
+    values.extend(f"{item.equipment_type} {item.number}" for item in extraction.candidates)
+    if not extraction.text:
+        try:
+            with fitz.open(pdf_path) as document:
+                values.extend(page.get_text("text") for page in document)
+        except Exception:
+            pass
+    return set(TOKEN_RE.findall("\n".join(values).upper()))
+
+
+def _format(name: str) -> str:
+    match = FORMAT_RE.search(name)
+    return f"A{match.group(1)}" if match else ""

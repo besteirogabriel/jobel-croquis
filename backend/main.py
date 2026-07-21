@@ -1,75 +1,214 @@
 from __future__ import annotations
-import json, os, re, shutil, uuid
+
+import json
+import logging
+import re
+import shutil
+import uuid
 from pathlib import Path
-import fitz
+
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic_settings import BaseSettings
 
-class Settings(BaseSettings):
-    openai_api_key: str = ""
-    openai_model: str = "gpt-5.6"
-    ai_enabled: bool = False
-    max_upload_mb: int = 50
-    data_dir: str = "/data"
-    class Config: env_file = ".env"
+from .config import settings
+from .engine import CroquiEngine
+from .engine.ai_fallback import AIAnalysisError, AIConfigurationError
+from .engine.excel_native import inspect_template
+from .engine.models import EquipmentType
+from .engine.office import OfficeError
 
-cfg=Settings(); root=Path(cfg.data_dir); root.mkdir(parents=True,exist_ok=True)
-app=FastAPI(title="Jobel Croquis",docs_url=None,redoc_url=None)
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_ROOT = settings.data_dir
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+JOB_ID_RE = re.compile(r"^[a-f0-9]{12}$")
 
-def extract(pdf:Path):
-    doc=fitz.open(pdf); text="\n".join(p.get_text() for p in doc)
-    def one(pattern,default=""):
-        m=re.search(pattern,text,re.I|re.M); return m.group(1).strip() if m else default
-    action=[]
-    for m in re.finditer(r"(Abrir|Fechar)\s+(Transformador|Religador|Chave|Fus[ií]vel)\s+(\d{5,8})",text,re.I):
-        action.append({"acao":m.group(1).title(),"tipo":m.group(2).title(),"numero":m.group(3)})
-    ids=sorted(set(re.findall(r"\b\d{6,7}\b",text)))
-    return {
-      "municipio":one(r"Munic[ií]pio:\s*([^\n]+)"),
-      "data_projeto":one(r"Data:\s*(\d{2}/\d{2}/\d{4})"),
-      "nota":one(r"Nota:\s*(\d{9,12})"),
-      "obra":one(r"Obra:\s*([^\n]+)"),
-      "levantador":one(r"Levantador:\s*([^\n]+)"),
-      "acoes":action,"identificadores":ids,
-      "alertas":["O equipamento que nomeia o croqui deve ser o dispositivo de isolamento, não necessariamente o item da tabela de manobras."],
-      "pages":len(doc)
-    }
+app = FastAPI(
+    title="Jobel Croquis Engine",
+    docs_url="/api/docs" if settings.expose_api_docs else None,
+    redoc_url=None,
+)
+engine = CroquiEngine(settings)
+logger = logging.getLogger(__name__)
+
+
+def _job_dir(job_id: str) -> Path:
+    if not JOB_ID_RE.fullmatch(job_id):
+        raise HTTPException(400, "Identificador de processamento inválido")
+    return DATA_ROOT / job_id
+
+
+async def _save_upload(upload: UploadFile, destination: Path, allowed: set[str]) -> Path:
+    suffix = Path(upload.filename or "").suffix.lower()
+    if suffix not in allowed:
+        expected = ", ".join(sorted(allowed))
+        raise HTTPException(400, f"Formato inválido. Envie: {expected}")
+    maximum = settings.max_upload_mb * 1024 * 1024
+    total = 0
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with destination.open("wb") as output:
+            while chunk := await upload.read(1024 * 1024):
+                total += len(chunk)
+                if total > maximum:
+                    raise HTTPException(413, f"Arquivo excede {settings.max_upload_mb} MB")
+                output.write(chunk)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    if total == 0:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(400, "Arquivo vazio")
+    return destination
+
+
+def _official_template() -> Path:
+    template = settings.official_template_path
+    if not template.is_absolute():
+        template = BASE_DIR / template
+    if not template.is_file():
+        raise HTTPException(500, "Modelo oficial interno não encontrado")
+    try:
+        inspect_template(template)
+    except Exception as exc:
+        raise HTTPException(500, f"Modelo oficial interno inválido: {exc}") from exc
+    return template
+
+
+def _network_registry() -> Path | None:
+    registry = settings.network_registry_path
+    if registry is None:
+        return None
+    if not registry.is_absolute():
+        registry = BASE_DIR / registry
+    if not registry.is_file():
+        raise HTTPException(500, "Cadastro de rede configurado no servidor não foi encontrado")
+    if registry.suffix.lower() not in {".csv", ".xls", ".xlsx"}:
+        raise HTTPException(500, "Cadastro de rede interno deve ser .csv, .xls ou .xlsx")
+    return registry
+
+
+def _run_engine(job_id: str, folder: Path):
+    try:
+        return engine.run(
+            job_id=job_id,
+            project=folder / "projeto.pdf",
+            template=_official_template(),
+            registry=_network_registry(),
+            job_dir=folder,
+        )
+    except OfficeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except HTTPException:
+        raise
+    except (AIConfigurationError, AIAnalysisError) as exc:
+        logger.exception("Falha na análise técnica backend do job %s", job_id)
+        raise HTTPException(503, "Análise técnica temporariamente indisponível") from exc
+    except Exception as exc:
+        logger.exception("Falha interna no motor do job %s", job_id)
+        raise HTTPException(500, "Não foi possível processar o projeto") from exc
+
 
 @app.get("/api/health")
-def health(): return {"ok":True,"ai":"disponivel" if cfg.ai_enabled and cfg.openai_api_key else "offline"}
+def health() -> JSONResponse:
+    template_ready = False
+    try:
+        _official_template()
+        template_ready = True
+    except HTTPException:
+        pass
+    return JSONResponse(
+        status_code=200 if template_ready else 503,
+        content={
+            "ok": template_ready,
+            "engine": "croqui",
+            "modelo_oficial": "pronto" if template_ready else "indisponivel",
+        },
+    )
+
 
 @app.post("/api/analisar")
-async def analisar(projeto:UploadFile=File(...), modelo:UploadFile|None=File(None), cadastro:UploadFile|None=File(None)):
-    if not projeto.filename.lower().endswith('.pdf'): raise HTTPException(400,"Envie um projeto PDF")
-    jid=uuid.uuid4().hex[:12]; folder=root/jid; folder.mkdir()
-    p=folder/"projeto.pdf"
-    with p.open('wb') as f: shutil.copyfileobj(projeto.file,f)
-    for up,name in ((modelo,"modelo"),(cadastro,"cadastro")):
-        if up:
-            dest=folder/(name+Path(up.filename).suffix.lower())
-            with dest.open('wb') as f: shutil.copyfileobj(up.file,f)
-    result=extract(p); result.update({"job_id":jid,"equipamento_isolamento":"","tipo_isolamento":""})
-    (folder/"analise.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
-    return result
+async def analisar(projeto: UploadFile = File(...)):
+    job_id = uuid.uuid4().hex[:12]
+    folder = _job_dir(job_id)
+    folder.mkdir(parents=True, exist_ok=False)
+    try:
+        await _save_upload(projeto, folder / "projeto.pdf", {".pdf"})
+        return _run_engine(job_id, folder).public_dict()
+    except Exception:
+        # Uploads inválidos não deixam jobs órfãos; resultados de motor são
+        # preservados pelo relatório quando a execução chegou a esse ponto.
+        if not (folder / "relatorio.json").exists():
+            shutil.rmtree(folder, ignore_errors=True)
+        raise
+
 
 @app.post("/api/confirmar")
-def confirmar(job_id:str=Form(...),tipo:str=Form(...),numero:str=Form(...),observacoes:str=Form("")):
-    folder=root/job_id; path=folder/"analise.json"
-    if not path.exists(): raise HTTPException(404,"Análise não encontrada")
-    data=json.loads(path.read_text(encoding='utf-8'))
-    data.update({"tipo_isolamento":tipo.upper(),"equipamento_isolamento":numero,"observacoes":observacoes,"status":"confirmado"})
-    path.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
-    return data
+def confirmar(
+    job_id: str = Form(...),
+    tipo: str = Form(...),
+    numero: str = Form(...),
+    observacoes: str = Form(""),
+):
+    folder = _job_dir(job_id)
+    project = folder / "projeto.pdf"
+    if not project.exists():
+        raise HTTPException(404, "Processamento não encontrado")
+    try:
+        equipment_type = EquipmentType(tipo.upper())
+    except ValueError as exc:
+        raise HTTPException(400, "Tipo inválido. Use TR, FU, FC, RL, RG, OL ou SC") from exc
+    if not re.fullmatch(r"\d{5,8}", numero):
+        raise HTTPException(400, "Número de equipamento inválido")
+    try:
+        result = engine.override(
+            job_id=job_id,
+            project=project,
+            template=_official_template(),
+            registry=_network_registry(),
+            job_dir=folder,
+            equipment_type=equipment_type,
+            number=numero,
+            observations=observacoes,
+        )
+    except OfficeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return result.public_dict()
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str):
+    report = _job_dir(job_id) / "relatorio.json"
+    if not report.exists():
+        raise HTTPException(404, "Processamento não encontrado")
+    return json.loads(report.read_text(encoding="utf-8"))
+
+
+@app.get("/api/jobs/{job_id}/download/{kind}")
+def download(job_id: str, kind: str):
+    folder = _job_dir(job_id)
+    report = folder / "relatorio.json"
+    if not report.exists():
+        raise HTTPException(404, "Processamento não encontrado")
+    data = json.loads(report.read_text(encoding="utf-8"))
+    artifact_key = "report" if kind == "report" else kind
+    if artifact_key not in {"report", "xlsx", "xls", "pdf", "preview"}:
+        raise HTTPException(404, "Artefato inválido")
+    filename = data.get("artifacts", {}).get(artifact_key)
+    path = folder / filename if filename else None
+    if path is None or not path.exists() or path.parent != folder:
+        raise HTTPException(404, "Artefato ainda não foi gerado")
+    return FileResponse(path, filename=path.name)
+
 
 @app.get("/api/relatorio/{job_id}")
-def relatorio(job_id:str):
-    p=root/job_id/"analise.json"
-    if not p.exists(): raise HTTPException(404,"Arquivo não encontrado")
-    return FileResponse(p,filename=f"jobel_analise_{job_id}.json")
+def legacy_report(job_id: str):
+    return download(job_id, "report")
 
-app.mount("/assets",StaticFiles(directory="frontend/assets"),name="assets")
+
+app.mount("/assets", StaticFiles(directory=BASE_DIR / "frontend" / "assets"), name="assets")
+
+
 @app.get("/{path:path}")
-def ui(path:str=""): return FileResponse("frontend/index.html")
-
+def ui(path: str = ""):
+    return FileResponse(BASE_DIR / "frontend" / "index.html")
